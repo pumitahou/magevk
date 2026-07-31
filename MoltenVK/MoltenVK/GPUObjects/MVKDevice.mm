@@ -1501,7 +1501,9 @@ void MVKPhysicalDevice::populateDeviceIDProperties(VkPhysicalDeviceVulkan11Prope
 
 void MVKPhysicalDevice::populateSubgroupProperties(VkPhysicalDeviceVulkan11Properties* pVk11Props) {
 	pVk11Props->subgroupSize = _metalFeatures.maxSubgroupSize;
-	pVk11Props->subgroupSupportedStages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+	pVk11Props->subgroupSupportedStages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT |
+										  (_gpuCapabilities.isAppleGPU && _metalFeatures.simdPermute &&
+										   _metalFeatures.simdReduction ? VK_SHADER_STAGE_VERTEX_BIT : 0);
 	if (_features.tessellationShader) {
 		pVk11Props->subgroupSupportedStages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 	}
