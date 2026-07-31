@@ -145,3 +145,4 @@ protected:
 	VkExtent2D _textureSize;
 	std::mutex _lock;
 };
+

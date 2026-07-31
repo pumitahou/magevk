@@ -108,3 +108,4 @@ protected:
 	MVKCommandEncodingPool _commandEncodingPool;
 	uint32_t _queueFamilyIndex;
 };
+
