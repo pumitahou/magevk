@@ -613,9 +613,6 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	for (uint32_t i = 0; i < waitSemaphoreInfoCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphoreSubmitInfos[i]);
 	}
-	if (getEnabledAccelerationStructureFeatures().accelerationStructure || _device->isPrivateSparseBufferEnabled()) {
-		for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
-	}
 }
 
 MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
@@ -631,9 +628,6 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	_waitSemaphores.reserve(waitSemaphoreCount);
 	for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphores[i], pWaitDstStageMask ? pWaitDstStageMask[i] : 0);
-	}
-	if (getEnabledAccelerationStructureFeatures().accelerationStructure || _device->isPrivateSparseBufferEnabled()) {
-		for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
 	}
 }
 
@@ -856,7 +850,6 @@ MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue
 			}
         }
     }
-	reserveEncodingSignals();
 }
 
 MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue,
@@ -893,17 +886,10 @@ MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue
 		}
 	}
 
-	for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
-	for (auto& signal : _signalSemaphores) { signal.reserveEncodingSignal(); }
 }
 
 MVKQueueCommandBufferSubmission::~MVKQueueCommandBufferSubmission() {
 	if (_fence) { _fence->release(); }
-}
-
-void MVKQueueCommandBufferSubmission::reserveEncodingSignals() {
-	if (!getEnabledAccelerationStructureFeatures().accelerationStructure && !_device->isPrivateSparseBufferEnabled()) { return; }
-	for (auto& signal : _signalSemaphores) { signal.reserveEncodingSignal(); }
 }
 
 #if MVK_XCODE_26 && MVK_MACOS
@@ -921,8 +907,6 @@ VkResult MVKQueueSparseSubmission::execute() {
 		}
 
 		for (auto& wait : _waitSemaphores) { wait.encodeWait(head); }
-		for (auto& wait : _waitSemaphores) { wait.waitForEncodingSignal(); }
-		_deferEncodingSignalPublication = false;
 		addPerformanceInterval(_queue->getPerformanceStats().queue.waitSubmitCommandBuffers, _creationTime);
 		[head encodeSignalEvent:_queue->_mtl4SparseEvent value:_startEventValue];
 		VkResult result = commitActiveMTLCommandBuffer();
@@ -986,10 +970,7 @@ VkResult MVKQueueSparseSubmission::execute() {
 
 		setActiveMTLCommandBuffer(tail);
 		[tail encodeWaitForEvent:_queue->_mtl4SparseEvent value:_doneEventValue];
-		for (auto& signal : _signalSemaphores) {
-			signal.encodeSignal(tail);
-			if (!_deferEncodingSignalPublication) { signal.publishEncodingSignal(); }
-		}
+		for (auto& signal : _signalSemaphores) { signal.encodeSignal(tail); }
 		return commitActiveMTLCommandBuffer(true);
 	}
 
