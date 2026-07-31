@@ -24,6 +24,7 @@
 #include "MVKFoundation.h"
 #include "MVKOSExtensions.h"
 #include "MVKGPUCapture.h"
+#include <unistd.h>
 
 using namespace std;
 
@@ -146,7 +147,25 @@ VkResult MVKQueue::submit(uint32_t submitCount, const S* pSubmits, VkFence fence
 template VkResult MVKQueue::submit(uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence, MVKCommandUse cmdUse);
 template VkResult MVKQueue::submit(uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence, MVKCommandUse cmdUse);
 
+// When a frame rate cap is configured via MVK_CONFIG_FRAME_RATE_CAP, enforce a minimum frame
+// duration of 1/FPS seconds between presents, by sleeping the remainder on the calling thread.
+static void throttleFrameRateCap() {
+	static std::atomic<uint64_t> lastPresentTimestamp{0};
+
+	uint32_t frameRateCapFPS = getGlobalMVKConfig().frameRateCapFPS;
+	if ( !frameRateCapFPS ) { return; }
+
+	uint64_t minFrameIntervalNS = 1000000000 / frameRateCapFPS;
+	uint64_t lastTS = lastPresentTimestamp.load();
+	uint64_t elapsedNS = lastTS ? mvkGetElapsedNanoseconds(lastTS) : minFrameIntervalNS;
+	if (elapsedNS < minFrameIntervalNS) {
+		usleep((useconds_t)(minFrameIntervalNS - elapsedNS) / 1000);
+	}
+	lastPresentTimestamp.store(mvkGetTimestamp());
+}
+
 VkResult MVKQueue::submit(const VkPresentInfoKHR* pPresentInfo) {
+	throttleFrameRateCap();
 	return submit(new MVKQueuePresentSurfaceSubmission(this, pPresentInfo));
 }
 

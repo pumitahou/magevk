@@ -87,6 +87,11 @@ MVK_CONFIG_MEMBER_STRING(shaderDumpDir,                   char*,                
 MVK_CONFIG_MEMBER(shaderLogEstimatedGLSL,                 VkBool32,                                 SHADER_LOG_ESTIMATED_GLSL)
 MVK_CONFIG_MEMBER(liveCheckAllResources,                  VkBool32,                                 LIVE_CHECK_ALL_RESOURCES)
 MVK_CONFIG_MEMBER(enableExperimentalRayTracing,           VkBool32,                                 ENABLE_EXPERIMENTAL_RAY_TRACING)
+MVK_CONFIG_MEMBER(frameRateCapFPS,                        uint32_t,                                 FRAME_RATE_CAP)
+MVK_CONFIG_MEMBER(fakeGeometryShader,                     VkBool32,                                 FAKE_GEOMETRY_SHADER)
+MVK_CONFIG_MEMBER(fakeShaderCullDistance,                 VkBool32,                                 FAKE_SHADER_CULL_DISTANCE)
+MVK_CONFIG_MEMBER(fakeRobustBufferAccess2,                VkBool32,                                 FAKE_ROBUST_BUFFER_ACCESS_2)
+MVK_CONFIG_MEMBER(fakeNullDescriptor,                     VkBool32,                                 FAKE_NULL_DESCRIPTOR)
 
 #undef MVK_CONFIG_MEMBER
 #undef MVK_CONFIG_MEMBER_STRING
@@ -102,4 +107,4 @@ MVK_CONFIG_MEMBER(enableExperimentalRayTracing,           VkBool32,             
  * Once  MVKConfiguration and the list above are in agreement, it may be necessary to modify
  * this value if the internal padding has changed as a result of new MVKConfiguration members.
  */
-#define kMVKConfigurationInternalPaddingByteCount  8
+#define kMVKConfigurationInternalPaddingByteCount  4

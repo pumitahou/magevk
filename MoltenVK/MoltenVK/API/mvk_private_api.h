@@ -248,6 +248,11 @@ typedef struct {
 	VkBool32 shaderLogEstimatedGLSL;                                           /**< MVK_CONFIG_SHADER_LOG_ESTIMATED_GLSL */
 	VkBool32 liveCheckAllResources;                                            /**< MVK_CONFIG_LIVE_CHECK_ALL_RESOURCES */
 	VkBool32 enableExperimentalRayTracing;                                     /**< MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING */
+	uint32_t frameRateCapFPS;                                                  /**< MVK_CONFIG_FRAME_RATE_CAP */
+	VkBool32 fakeGeometryShader;                                               /**< MVK_CONFIG_FAKE_GEOMETRY_SHADER */
+	VkBool32 fakeShaderCullDistance;                                           /**< MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE */
+	VkBool32 fakeRobustBufferAccess2;                                          /**< MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2 */
+	VkBool32 fakeNullDescriptor;                                               /**< MVK_CONFIG_FAKE_NULL_DESCRIPTOR */
 } MVKConfiguration;
 
 // Legacy support for renamed struct elements.

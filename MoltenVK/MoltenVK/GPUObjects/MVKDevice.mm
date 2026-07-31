@@ -664,9 +664,9 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
 			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR: {
 				auto* robustness2Features = (VkPhysicalDeviceRobustness2FeaturesKHR*)next;
-				robustness2Features->robustBufferAccess2 = false;
+				robustness2Features->robustBufferAccess2 = getMVKConfig().fakeRobustBufferAccess2;
 				robustness2Features->robustImageAccess2 = _gpuCapabilities.isAppleGPU;
-				robustness2Features->nullDescriptor = false;
+				robustness2Features->nullDescriptor = getMVKConfig().fakeNullDescriptor;
 				break;
 			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FMA_FEATURES_KHR: {
@@ -2850,6 +2850,13 @@ void MVKPhysicalDevice::initFeatures() {
     _features.inheritedQueries = true;
 	_features.vertexPipelineStoresAndAtomics = true;
 	_features.fragmentStoresAndAtomics = true;
+
+	/* Metal has no geometry shader stage, but some translation layers (e.g. DXVK)
+	   hard-require the feature at device selection time. Allow opting into a lie. */
+	_features.geometryShader = getMVKConfig().fakeGeometryShader;
+
+	/* Same for cull distances, which Metal does not support. */
+	_features.shaderCullDistance = getMVKConfig().fakeShaderCullDistance;
 
 	_features.shaderSampledImageArrayDynamicIndexing = _metalFeatures.arrayOfTextures;
 	_features.textureCompressionBC = _gpuCapabilities.supportsBCTextureCompression;

@@ -355,3 +355,52 @@ void mvkSetConfig(MVKConfiguration& dstMVKConfig, const MVKConfiguration& srcMVK
 #ifndef MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING
 #   define MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING 0
 #endif
+
+/*
+ * Caps the rate at which frames are presented, in frames per second.
+ * When set to a positive value, vkQueuePresentKHR() will sleep on the calling thread
+ * as needed to enforce a minimum frame duration of 1/FPS seconds. Zero disables
+ * the cap (uncapped). Disabled by default.
+ */
+#ifndef MVK_CONFIG_FRAME_RATE_CAP
+#   define MVK_CONFIG_FRAME_RATE_CAP 0
+#endif
+
+/*
+ * Advertises the geometryShader Vulkan feature even though Metal has no native
+ * geometry shader stage. This lets API translation layers that hard-require the
+ * feature at device selection time (e.g. DXVK) accept the device. Only enable
+ * for workloads known not to actually use geometry shaders. Disabled by default.
+ */
+#ifndef MVK_CONFIG_FAKE_GEOMETRY_SHADER
+#   define MVK_CONFIG_FAKE_GEOMETRY_SHADER 0
+#endif
+
+/*
+ * Advertises the shaderCullDistance Vulkan feature even though Metal has no
+ * cull-distance support. Companion to MVK_CONFIG_FAKE_GEOMETRY_SHADER for
+ * translation layers that hard-require it (e.g. DXVK). Only enable for
+ * workloads known not to use SV_CullDistance. Disabled by default.
+ */
+#ifndef MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE
+#   define MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE 0
+#endif
+
+/*
+ * Advertises robustBufferAccess2 (VK_EXT_robustness2) even though it is not
+ * fully implemented. MoltenVK already advertises core robustBufferAccess for
+ * the same practical reason. Required by DXVK. Disabled by default.
+ */
+#ifndef MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2
+#   define MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2 0
+#endif
+
+/*
+ * Advertises nullDescriptor (VK_EXT_robustness2): allows VK_NULL_HANDLE in
+ * descriptor updates. Translation layers like DXVK hard-require it; reading a
+ * null descriptor without real support is undefined, so only enable for
+ * workloads known not to rely on null-descriptor reads. Disabled by default.
+ */
+#ifndef MVK_CONFIG_FAKE_NULL_DESCRIPTOR
+#   define MVK_CONFIG_FAKE_NULL_DESCRIPTOR 0
+#endif

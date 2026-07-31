@@ -669,3 +669,14 @@ In the special case of `VK_SEMAPHORE_TYPE_TIMELINE` semaphores, **MoltenVK** wil
 Makes MoltenVK treat all descriptors as if they had `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` set.
 Versions of MoltenVK with this flag are less forgiving of applications that bind descriptors that point to
 destroyed objects, so this option can be used to temporarily work around any breakage that may have caused.
+
+---------------------------------------
+#### MVK_CONFIG_FRAME_RATE_CAP
+
+##### Type: UInt32
+##### Default: `0`
+
+Caps the rate at which frames are presented, in frames per second.
+When set to a positive value, `vkQueuePresentKHR()` sleeps on the calling thread as needed
+to enforce a minimum frame duration of 1/FPS seconds, similar to `DXVK_FRAME_RATE`.
+A value of `0` disables the cap, leaving presentation uncapped.
