@@ -253,6 +253,7 @@ typedef struct {
 	VkBool32 fakeShaderCullDistance;                                           /**< MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE */
 	VkBool32 fakeRobustBufferAccess2;                                          /**< MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2 */
 	VkBool32 fakeNullDescriptor;                                               /**< MVK_CONFIG_FAKE_NULL_DESCRIPTOR */
+	VkBool32 fakeShaderBufferInt64Atomics;                                     /**< MVK_CONFIG_FAKE_SHADER_BUFFER_INT64_ATOMICS */
 } MVKConfiguration;
 
 // Legacy support for renamed struct elements.

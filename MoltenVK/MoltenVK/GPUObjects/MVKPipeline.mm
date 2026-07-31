@@ -3676,15 +3676,6 @@ namespace SPIRV_CROSS_NAMESPACE {
 				opt.swizzle_buffer_index,
 				opt.indirect_params_buffer_index,
 				opt.shader_output_buffer_index,
-				opt.ray_tracing_intersection_buffer_index,
-				opt.ray_tracing_callable_buffer_index,
-				opt.ray_tracing_recursive_function_buffer_index,
-					opt.ray_tracing_recursive_intersection_buffer_index,
-					opt.ray_tracing_instance_metadata_buffer_index,
-					opt.ray_tracing_acceleration_structure_address_table_buffer_index,
-					opt.ray_tracing_stage_depth,
-				opt.enable_ray_tracing_pipeline_emulation,
-				opt.ray_tracing_raygen_visible,
 				opt.shader_patch_output_buffer_index,
 				opt.shader_tess_factor_buffer_index,
 				opt.buffer_size_buffer_index,
@@ -3747,7 +3738,18 @@ namespace SPIRV_CROSS_NAMESPACE {
 				opt.force_fragment_with_side_effects_execution,
 				opt.input_attachment_is_ds_attachment,
 				opt.auto_disable_rasterization,
-				opt.use_fast_math_pragmas);
+				opt.use_fast_math_pragmas,
+				opt.emulate_int64_atomics,
+				opt.enable_ray_tracing_pipeline_emulation,
+				opt.ray_tracing_intersection_buffer_index,
+				opt.ray_tracing_callable_buffer_index,
+				opt.ray_tracing_recursive_function_buffer_index,
+				opt.ray_tracing_recursive_intersection_buffer_index,
+				opt.ray_tracing_instance_metadata_buffer_index,
+				opt.ray_tracing_acceleration_structure_address_table_buffer_index,
+				opt.ray_tracing_stage_depth,
+				opt.ray_tracing_raygen_visible,
+				opt.enable_ray_tracing_position_fetch);
 	}
 
 	template<class Archive>

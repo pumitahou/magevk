@@ -92,6 +92,7 @@ MVK_CONFIG_MEMBER(fakeGeometryShader,                     VkBool32,             
 MVK_CONFIG_MEMBER(fakeShaderCullDistance,                 VkBool32,                                 FAKE_SHADER_CULL_DISTANCE)
 MVK_CONFIG_MEMBER(fakeRobustBufferAccess2,                VkBool32,                                 FAKE_ROBUST_BUFFER_ACCESS_2)
 MVK_CONFIG_MEMBER(fakeNullDescriptor,                     VkBool32,                                 FAKE_NULL_DESCRIPTOR)
+MVK_CONFIG_MEMBER(fakeShaderBufferInt64Atomics,           VkBool32,                                 FAKE_SHADER_BUFFER_INT64_ATOMICS)
 
 #undef MVK_CONFIG_MEMBER
 #undef MVK_CONFIG_MEMBER_STRING
@@ -107,4 +108,4 @@ MVK_CONFIG_MEMBER(fakeNullDescriptor,                     VkBool32,             
  * Once  MVKConfiguration and the list above are in agreement, it may be necessary to modify
  * this value if the internal padding has changed as a result of new MVKConfiguration members.
  */
-#define kMVKConfigurationInternalPaddingByteCount  4
+#define kMVKConfigurationInternalPaddingByteCount  8

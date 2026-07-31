@@ -180,7 +180,7 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
 		.storageBuffer8BitAccess = true,
 		.uniformAndStorageBuffer8BitAccess = true,
 		.storagePushConstant8 = true,
-		.shaderBufferInt64Atomics = false,
+		.shaderBufferInt64Atomics = getMVKConfig().fakeShaderBufferInt64Atomics,
 		.shaderSharedInt64Atomics = false,
 		.shaderFloat16 = true,
 		.shaderInt8 = true,

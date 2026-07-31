@@ -421,6 +421,10 @@ bool MVKShaderModule::convert(SPIRVToMSLConversionConfiguration* pShaderConfig,
 	bool shouldLogCode = mvkCfg.debugMode;
 	bool shouldLogEstimatedGLSL = shouldLogCode && mvkCfg.shaderLogEstimatedGLSL;
 
+	// Metal has no 64-bit shader atomics. When the feature is faked at the device
+	// level, degrade them to non-atomic read-modify-write sequences here.
+	pShaderConfig->options.mslOptions.emulate_int64_atomics = mvkCfg.fakeShaderBufferInt64Atomics;
+
 	uint64_t startTime = getPerformanceTimestamp();
 	bool wasConverted = _spvConverter.convert(*pShaderConfig, conversionResult, shouldLogCode, shouldLogCode, shouldLogEstimatedGLSL);
 	addPerformanceInterval(getPerformanceStats().shaderCompilation.spirvToMSL, startTime);

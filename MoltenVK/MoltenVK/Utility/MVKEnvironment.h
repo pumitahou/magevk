@@ -404,3 +404,14 @@ void mvkSetConfig(MVKConfiguration& dstMVKConfig, const MVKConfiguration& srcMVK
 #ifndef MVK_CONFIG_FAKE_NULL_DESCRIPTOR
 #   define MVK_CONFIG_FAKE_NULL_DESCRIPTOR 0
 #endif
+
+/*
+ * Advertises shaderBufferInt64Atomics (Vulkan 1.2) even though Metal has no
+ * 64-bit shader atomics. When enabled, SPIRV-Cross degrades 64-bit atomic ops
+ * on storage buffers to non-atomic read-modify-write sequences. Racy under
+ * contention, but sufficient for counters and telemetry. Only enable for
+ * workloads known to tolerate that. Disabled by default.
+ */
+#ifndef MVK_CONFIG_FAKE_SHADER_BUFFER_INT64_ATOMICS
+#   define MVK_CONFIG_FAKE_SHADER_BUFFER_INT64_ATOMICS 0
+#endif
