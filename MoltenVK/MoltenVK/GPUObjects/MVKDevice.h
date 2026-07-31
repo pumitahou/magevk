@@ -492,6 +492,7 @@ protected:
 	void initExternalMemoryProperties();
 	void initExtensions();
 	void initCounterSets();
+	void initMageSpoofedIdentity();
 	bool needsCounterSetRetained();
 	void updateTimestampPeriod();
 	MVKArrayRef<MVKQueueFamily*> getQueueFamilies();

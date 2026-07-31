@@ -2427,7 +2427,27 @@ MVKPhysicalDevice::MVKPhysicalDevice(MVKInstance* mvkInstance, id<MTLDevice> mtl
 	initExternalMemoryProperties();
 	initCounterSets();
 	initVkSemaphoreStyle();
+	initMageSpoofedIdentity();
 	logGPUInfo();
+}
+
+// Mage: allow the runtime to spoof the device identity reported to apps, for
+// games that gate features (such as ray tracing) on specific Windows GPU
+// vendors. Applied after all internal init so Metal feature detection,
+// memory model selection, and the pipeline cache UUID still use the real GPU.
+void MVKPhysicalDevice::initMageSpoofedIdentity() {
+	static const uint32_t vendorID = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_VENDOR_ID");
+	if ( !vendorID ) { return; }
+	_properties.vendorID = vendorID;
+	static const uint32_t deviceID = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_DEVICE_ID");
+	if (deviceID) { _properties.deviceID = deviceID; }
+	static const uint32_t driverVersion = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_DRIVER_VERSION");
+	if (driverVersion) { _properties.driverVersion = driverVersion; }
+	const char* deviceName = getenv("MAGE_VK_DEVICE_NAME");
+	if (deviceName && deviceName[0]) {
+		memset(_properties.deviceName, 0, sizeof(_properties.deviceName));
+		strncpy(_properties.deviceName, deviceName, sizeof(_properties.deviceName) - 1);
+	}
 }
 
 static MVKPhysicalDeviceArgumentBufferSizes::Entry getArgumentBufferSize(id<MTLDevice> dev, MTLDataType type) {
