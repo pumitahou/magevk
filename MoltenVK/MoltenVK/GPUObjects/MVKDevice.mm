@@ -2428,6 +2428,7 @@ MVKPhysicalDevice::MVKPhysicalDevice(MVKInstance* mvkInstance, id<MTLDevice> mtl
 	initCounterSets();
 	initVkSemaphoreStyle();
 	initMageSpoofedIdentity();
+	initMageSparseFeatures();
 	logGPUInfo();
 }
 
@@ -2443,11 +2444,37 @@ void MVKPhysicalDevice::initMageSpoofedIdentity() {
 	if (deviceID) { _properties.deviceID = deviceID; }
 	static const uint32_t driverVersion = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_DRIVER_VERSION");
 	if (driverVersion) { _properties.driverVersion = driverVersion; }
+	static const uint32_t deviceType = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_DEVICE_TYPE");
+	if (deviceType) { _properties.deviceType = (VkPhysicalDeviceType)deviceType; }
 	const char* deviceName = getenv("MAGE_VK_DEVICE_NAME");
 	if (deviceName && deviceName[0]) {
 		memset(_properties.deviceName, 0, sizeof(_properties.deviceName));
 		strncpy(_properties.deviceName, deviceName, sizeof(_properties.deviceName) - 1);
 	}
+}
+
+// Mage: report sparse binding/residency features to apps. id Tech 8 titles
+// (DOOM: The Dark Ages) gate the launcher's GPU check on sparse residency,
+// which real AMD/NVIDIA drivers expose and MoltenVK normally reports as
+// unsupported. Enabled together with the private sparse buffer emulation via
+// MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS. Values mirror a discrete AMD
+// Windows driver (full residency, strict non-resident semantics).
+void MVKPhysicalDevice::initMageSparseFeatures() {
+	if (mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") == 0.0) { return; }
+	_features.sparseBinding = VK_TRUE;
+	_features.sparseResidencyBuffer = VK_TRUE;
+	_features.sparseResidencyImage2D = VK_TRUE;
+	_features.sparseResidencyImage3D = VK_TRUE;
+	_features.sparseResidency2Samples = VK_TRUE;
+	_features.sparseResidency4Samples = VK_TRUE;
+	_features.sparseResidency8Samples = VK_TRUE;
+	_features.sparseResidency16Samples = VK_TRUE;
+	_features.sparseResidencyAliased = VK_TRUE;
+	_properties.sparseProperties.residencyStandard2DBlockShape = VK_TRUE;
+	_properties.sparseProperties.residencyStandard2DMultisampleBlockShape = VK_TRUE;
+	_properties.sparseProperties.residencyStandard3DBlockShape = VK_TRUE;
+	_properties.sparseProperties.residencyAlignedMipSize = VK_TRUE;
+	_properties.sparseProperties.residencyNonResidentStrict = VK_TRUE;
 }
 
 static MVKPhysicalDeviceArgumentBufferSizes::Entry getArgumentBufferSize(id<MTLDevice> dev, MTLDataType type) {

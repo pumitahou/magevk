@@ -493,6 +493,7 @@ protected:
 	void initExtensions();
 	void initCounterSets();
 	void initMageSpoofedIdentity();
+	void initMageSparseFeatures();
 	bool needsCounterSetRetained();
 	void updateTimestampPeriod();
 	MVKArrayRef<MVKQueueFamily*> getQueueFamilies();
