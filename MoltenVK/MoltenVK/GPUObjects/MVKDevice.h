@@ -696,6 +696,8 @@ public:
 
 	/** Block the current thread until all queues in this device are idle. */
 	VkResult waitIdle();
+
+	bool isPrivateSparseBufferEnabled() const { return _privateSparseBufferEnabled; }
 	
 	/** Mark this device (and optionally the physical device) as lost. Releases all waits for this device. */
 	VkResult markLost(bool alsoMarkPhysicalDevice = false);
@@ -1161,6 +1163,7 @@ protected:
 	int _capturePipeFileDesc = -1;
 	bool _isPerformanceTracking = false;
 	bool _isCurrentlyAutoGPUCapturing = false;
+	bool _privateSparseBufferEnabled = false;
 
 };
 

@@ -18,6 +18,7 @@
 
 #include "MVKInstance.h"
 #include "MVKQueue.h"
+#include "MVKBuffer.h"
 #include "MVKSurface.h"
 #include "MVKSwapchain.h"
 #include "MVKSync.h"
@@ -167,6 +168,137 @@ static void throttleFrameRateCap() {
 VkResult MVKQueue::submit(const VkPresentInfoKHR* pPresentInfo) {
 	throttleFrameRateCap();
 	return submit(new MVKQueuePresentSurfaceSubmission(this, pPresentInfo));
+}
+
+VkResult MVKQueue::bindSparse(uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence) {
+#if MVK_XCODE_26 && MVK_MACOS
+	if (!_device->isPrivateSparseBufferEnabled() || !_mtl4SparseQueue || !_mtl4SparseEvent) {
+		return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Private sparse buffers are not available.");
+	}
+	if (!bindInfoCount) {
+		return fence ? submit(new MVKQueueCommandBufferSubmission(this, (VkSubmitInfo*)nullptr, fence, kMVKCommandUseQueueSubmit)) : VK_SUCCESS;
+	}
+	if (!pBindInfo) {
+		return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Bind info is missing.");
+	}
+	if (bindInfoCount > (UINT64_MAX - _mtl4SparseEventValue) / 2) {
+		return reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkQueueBindSparse(): Internal event values are exhausted.");
+	}
+	if (fence && ((MVKFence*)fence)->getDevice() != _device) {
+		return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Fence belongs to another device.");
+	}
+
+	for (uint32_t infoIdx = 0; infoIdx < bindInfoCount; infoIdx++) {
+		const VkBindSparseInfo& bindInfo = pBindInfo[infoIdx];
+		if (bindInfo.sType != VK_STRUCTURE_TYPE_BIND_SPARSE_INFO ||
+			(bindInfo.waitSemaphoreCount && !bindInfo.pWaitSemaphores) ||
+			(bindInfo.bufferBindCount && !bindInfo.pBufferBinds) ||
+			(bindInfo.signalSemaphoreCount && !bindInfo.pSignalSemaphores) ||
+			bindInfo.imageOpaqueBindCount || bindInfo.imageBindCount) {
+			return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Bind info %u is not supported.", infoIdx);
+		}
+
+		const VkTimelineSemaphoreSubmitInfo* timelineInfo = nullptr;
+		for (const auto* next = (const VkBaseInStructure*)bindInfo.pNext; next; next = next->pNext) {
+			if (next->sType != VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO || timelineInfo) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Bind info %u has an unsupported pNext structure.", infoIdx);
+			}
+			timelineInfo = (const VkTimelineSemaphoreSubmitInfo*)next;
+		}
+		if (timelineInfo &&
+			(timelineInfo->waitSemaphoreValueCount != bindInfo.waitSemaphoreCount ||
+			 timelineInfo->signalSemaphoreValueCount != bindInfo.signalSemaphoreCount ||
+			 (timelineInfo->waitSemaphoreValueCount && !timelineInfo->pWaitSemaphoreValues) ||
+			 (timelineInfo->signalSemaphoreValueCount && !timelineInfo->pSignalSemaphoreValues))) {
+			return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Bind info %u has invalid timeline semaphore values.", infoIdx);
+		}
+
+		bool hasTimelineSemaphore = false;
+		for (uint32_t semIdx = 0; semIdx < bindInfo.waitSemaphoreCount; semIdx++) {
+			auto* semaphore = (MVKSemaphore*)bindInfo.pWaitSemaphores[semIdx];
+			if (!semaphore || semaphore->getDevice() != _device) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Wait semaphore belongs to another device.");
+			}
+			hasTimelineSemaphore |= semaphore->getSemaphoreType() == VK_SEMAPHORE_TYPE_TIMELINE;
+		}
+		for (uint32_t semIdx = 0; semIdx < bindInfo.signalSemaphoreCount; semIdx++) {
+			auto* semaphore = (MVKSemaphore*)bindInfo.pSignalSemaphores[semIdx];
+			if (!semaphore || semaphore->getDevice() != _device) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Signal semaphore belongs to another device.");
+			}
+			hasTimelineSemaphore |= semaphore->getSemaphoreType() == VK_SEMAPHORE_TYPE_TIMELINE;
+		}
+		if (hasTimelineSemaphore && !timelineInfo) {
+			return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Timeline semaphore values are missing.");
+		}
+
+		for (uint32_t bufferIdx = 0; bufferIdx < bindInfo.bufferBindCount; bufferIdx++) {
+			const VkSparseBufferMemoryBindInfo& bufferInfo = bindInfo.pBufferBinds[bufferIdx];
+			auto* buffer = (MVKBuffer*)bufferInfo.buffer;
+			if (!buffer || buffer->getDevice() != _device || !buffer->isPrivateSparseBuffer() ||
+				!buffer->getMTLBuffer() || (bufferInfo.bindCount && !bufferInfo.pBinds)) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Buffer bind %u in info %u is not supported.", bufferIdx, infoIdx);
+			}
+			VkDeviceSize bufferSize = buffer->getByteCount();
+			if (bufferSize > UINT64_MAX - (kMVKPrivateSparseBufferPageSize - 1)) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse buffer size overflows.");
+			}
+			bufferSize = mvkAlignByteCount(bufferSize, kMVKPrivateSparseBufferPageSize);
+
+			for (uint32_t bindIdx = 0; bindIdx < bufferInfo.bindCount; bindIdx++) {
+				const VkSparseMemoryBind& bind = bufferInfo.pBinds[bindIdx];
+				if (bind.flags ||
+					!bind.size ||
+					bind.resourceOffset % kMVKPrivateSparseBufferPageSize ||
+					bind.size % kMVKPrivateSparseBufferPageSize ||
+					bind.resourceOffset > UINT64_MAX - bind.size ||
+					bind.resourceOffset + bind.size > bufferSize) {
+					return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Buffer bind range is invalid.");
+				}
+				if (bind.memory) {
+					auto* memory = (MVKDeviceMemory*)bind.memory;
+					if (memory->getDevice() != _device ||
+						!memory->isPlacementSparseCompatible() ||
+						!memory->getMTLPlacementSparseHeap() ||
+						bind.memoryOffset % kMVKPrivateSparseBufferPageSize ||
+						bind.memoryOffset > UINT64_MAX - bind.size ||
+						bind.memoryOffset + bind.size > memory->getDeviceMemoryCommitment()) {
+						return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse memory bind range is invalid.");
+					}
+				}
+			}
+		}
+	}
+
+	MVKSmallVector<MVKQueueSparseSubmission*, 4> submissions;
+	submissions.reserve(bindInfoCount);
+	uint64_t eventValue = _mtl4SparseEventValue;
+	for (uint32_t infoIdx = 0; infoIdx < bindInfoCount; infoIdx++) {
+		VkFence submissionFence = infoIdx + 1 == bindInfoCount ? fence : VK_NULL_HANDLE;
+		auto* submission = new MVKQueueSparseSubmission(this,
+														&pBindInfo[infoIdx],
+														submissionFence,
+														eventValue + 1,
+														eventValue + 2);
+		eventValue += 2;
+		submissions.push_back(submission);
+		if (submission->getConfigurationResult() != VK_SUCCESS) {
+			VkResult result = submission->getConfigurationResult();
+			for (auto* ownedSubmission : submissions) { ownedSubmission->destroy(); }
+			return result;
+		}
+	}
+	_mtl4SparseEventValue = eventValue;
+
+	VkResult result = VK_SUCCESS;
+	for (auto* submission : submissions) {
+		VkResult submissionResult = submit(submission);
+		if (result == VK_SUCCESS) { result = submissionResult; }
+	}
+	return result;
+#else
+	return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Private sparse buffers are not available.");
+#endif
 }
 
 VkResult MVKQueue::waitIdle(MVKCommandUse cmdUse) {
@@ -349,6 +481,25 @@ void MVKQueue::initMTLCommandQueue() {
 	_mtlQueue = _queueFamily->getMTLCommandQueue(_index);	// not retained (cached in queue family)
 	_device->addResidencySet(_mtlQueue);
 
+#if MVK_XCODE_26 && MVK_MACOS
+	if (_device->isPrivateSparseBufferEnabled()) {
+		if (@available(macOS 26.4, *)) {
+			MTL4CommandQueueDescriptor* descriptor = [MTL4CommandQueueDescriptor new];
+			_mtl4SparseQueue = [getMTLDevice() newMTL4CommandQueueWithDescriptor:descriptor error:nil];
+			[descriptor release];
+			_mtl4SparseEvent = [getMTLDevice() newSharedEvent];
+			if (_mtl4SparseQueue && _mtl4SparseEvent) {
+				_device->addResidencySet((id<MTLCommandQueue>)_mtl4SparseQueue);
+			} else {
+				[_mtl4SparseQueue release];
+				[_mtl4SparseEvent release];
+				_mtl4SparseQueue = nil;
+				_mtl4SparseEvent = nil;
+			}
+		}
+	}
+#endif
+
 	_submissionCaptureScope = new MVKGPUCaptureScope(this);
 	if (_queueFamily->getIndex() == getMVKConfig().defaultGPUCaptureScopeQueueFamilyIndex &&
 		_index == getMVKConfig().defaultGPUCaptureScopeQueueIndex) {
@@ -362,6 +513,14 @@ MVKQueue::~MVKQueue() {
 	destroyExecQueue();
 	_submissionCaptureScope->destroy();
 	_device->removeResidencySet(_mtlQueue);
+
+#if MVK_XCODE_26 && MVK_MACOS
+	if (_mtl4SparseQueue) {
+		_device->removeResidencySet((id<MTLCommandQueue>)_mtl4SparseQueue);
+	}
+	[_mtl4SparseQueue release];
+	[_mtl4SparseEvent release];
+#endif
 
 	[_mtlCmdBuffLabelBeginCommandBuffer release];
 	[_mtlCmdBuffLabelQueueSubmit release];
@@ -454,6 +613,9 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	for (uint32_t i = 0; i < waitSemaphoreInfoCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphoreSubmitInfos[i]);
 	}
+	if (getEnabledAccelerationStructureFeatures().accelerationStructure || _device->isPrivateSparseBufferEnabled()) {
+		for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
+	}
 }
 
 MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
@@ -469,6 +631,9 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	_waitSemaphores.reserve(waitSemaphoreCount);
 	for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphores[i], pWaitDstStageMask ? pWaitDstStageMask[i] : 0);
+	}
+	if (getEnabledAccelerationStructureFeatures().accelerationStructure || _device->isPrivateSparseBufferEnabled()) {
+		for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
 	}
 }
 
@@ -691,12 +856,209 @@ MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue
 			}
         }
     }
+	reserveEncodingSignals();
+}
+
+MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue,
+																 const VkBindSparseInfo* pBindInfo,
+																 VkFence fence,
+																 MVKCommandUse cmdUse)
+	: MVKQueueSubmission(queue,
+						 pBindInfo ? pBindInfo->waitSemaphoreCount : 0,
+						 pBindInfo ? pBindInfo->pWaitSemaphores : nullptr,
+						 nullptr),
+	  _fence((MVKFence*)fence),
+	  _commandUse(cmdUse) {
+	if (_fence) { _fence->retain(); }
+
+	if (pBindInfo) {
+		_signalSemaphores.reserve(pBindInfo->signalSemaphoreCount);
+		for (uint32_t i = 0; i < pBindInfo->signalSemaphoreCount; i++) {
+			_signalSemaphores.emplace_back(pBindInfo->pSignalSemaphores[i], 0);
+		}
+
+		const VkTimelineSemaphoreSubmitInfo* timelineInfo = nullptr;
+		for (const auto* next = (const VkBaseInStructure*)pBindInfo->pNext; next; next = next->pNext) {
+			if (next->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+				timelineInfo = (const VkTimelineSemaphoreSubmitInfo*)next;
+			}
+		}
+		if (timelineInfo) {
+			for (uint32_t i = 0; i < pBindInfo->waitSemaphoreCount; i++) {
+				_waitSemaphores[i].value = timelineInfo->pWaitSemaphoreValues[i];
+			}
+			for (uint32_t i = 0; i < pBindInfo->signalSemaphoreCount; i++) {
+				_signalSemaphores[i].value = timelineInfo->pSignalSemaphoreValues[i];
+			}
+		}
+	}
+
+	for (auto& wait : _waitSemaphores) { wait.reserveEncodingWait(); }
+	for (auto& signal : _signalSemaphores) { signal.reserveEncodingSignal(); }
 }
 
 MVKQueueCommandBufferSubmission::~MVKQueueCommandBufferSubmission() {
 	if (_fence) { _fence->release(); }
 }
 
+void MVKQueueCommandBufferSubmission::reserveEncodingSignals() {
+	if (!getEnabledAccelerationStructureFeatures().accelerationStructure && !_device->isPrivateSparseBufferEnabled()) { return; }
+	for (auto& signal : _signalSemaphores) { signal.reserveEncodingSignal(); }
+}
+
+#if MVK_XCODE_26 && MVK_MACOS
+VkResult MVKQueueSparseSubmission::execute() {
+	if (@available(macOS 26.4, *)) {
+		_queue->_submissionCaptureScope->beginScope();
+
+		id<MTLCommandBuffer> tail = _queue->getMTLCommandBuffer(_commandUse, true);
+		id<MTLCommandBuffer> head = tail ? getActiveMTLCommandBuffer() : nil;
+		if (!head || !tail) {
+			setConfigurationResult(VK_ERROR_OUT_OF_POOL_MEMORY);
+			VkResult result = getConfigurationResult();
+			finish();
+			return result;
+		}
+
+		for (auto& wait : _waitSemaphores) { wait.encodeWait(head); }
+		for (auto& wait : _waitSemaphores) { wait.waitForEncodingSignal(); }
+		_deferEncodingSignalPublication = false;
+		addPerformanceInterval(_queue->getPerformanceStats().queue.waitSubmitCommandBuffers, _creationTime);
+		[head encodeSignalEvent:_queue->_mtl4SparseEvent value:_startEventValue];
+		VkResult result = commitActiveMTLCommandBuffer();
+		if (result != VK_SUCCESS) {
+			finish();
+			return result;
+		}
+
+		[_queue->_mtl4SparseQueue waitForEvent:_queue->_mtl4SparseEvent value:_startEventValue];
+		for (const auto& bind : _bufferBinds) {
+			MTL4UpdateSparseBufferMappingOperation operation = {
+				.mode = bind.memory ? MTLSparseTextureMappingModeMap : MTLSparseTextureMappingModeUnmap,
+				.bufferRange = NSMakeRange((NSUInteger)(bind.resourceOffset / kMVKPrivateSparseBufferPageSize),
+										  (NSUInteger)(bind.size / kMVKPrivateSparseBufferPageSize)),
+				.heapOffset = (NSUInteger)(bind.memoryOffset / kMVKPrivateSparseBufferPageSize),
+			};
+			[_queue->_mtl4SparseQueue updateBufferMappings:bind.mtlBuffer
+													 heap:bind.mtlHeap
+											   operations:&operation
+													count:1];
+		}
+
+		[_mtl4BarrierBuffer beginCommandBufferWithAllocator:_mtl4Allocator];
+		id<MTL4ComputeCommandEncoder> barrier = [_mtl4BarrierBuffer computeCommandEncoder];
+		if (!barrier) {
+			setConfigurationResult(VK_ERROR_OUT_OF_DEVICE_MEMORY);
+			_queue->_mtl4SparseEvent.signaledValue = _doneEventValue;
+			_queue->getDevice()->markLost(false);
+		} else {
+			[barrier barrierAfterQueueStages:MTLStageResourceState
+							   beforeStages:MTLStageAll
+						  visibilityOptions:MTL4VisibilityOptionResourceAlias];
+			[barrier endEncoding];
+			[_mtl4BarrierBuffer endCommandBuffer];
+		}
+
+		MVKQueue* retainedQueue = _queue;
+		if (barrier) {
+			retainedQueue->retain();
+			id<MTLSharedEvent> retainedEvent = [_queue->_mtl4SparseEvent retain];
+			uint64_t doneEventValue = _doneEventValue;
+			MTL4CommitOptions* options = [MTL4CommitOptions new];
+			[options addFeedbackHandler:^(id<MTL4CommitFeedback> feedback) {
+				if (feedback.error) {
+					if (retainedEvent.signaledValue < doneEventValue) {
+						retainedEvent.signaledValue = doneEventValue;
+					}
+					retainedQueue->getDevice()->markLost(false);
+					retainedQueue->reportError(VK_ERROR_DEVICE_LOST,
+						"vkQueueBindSparse(): Metal sparse mapping failed: %s",
+						feedback.error.localizedDescription.UTF8String);
+				}
+				[retainedEvent release];
+				retainedQueue->release();
+			}];
+			id<MTL4CommandBuffer> barrierBuffers[] = { _mtl4BarrierBuffer };
+			[_queue->_mtl4SparseQueue commit:barrierBuffers count:1 options:options];
+			[options release];
+			[_queue->_mtl4SparseQueue signalEvent:_queue->_mtl4SparseEvent value:_doneEventValue];
+		}
+
+		setActiveMTLCommandBuffer(tail);
+		[tail encodeWaitForEvent:_queue->_mtl4SparseEvent value:_doneEventValue];
+		for (auto& signal : _signalSemaphores) {
+			signal.encodeSignal(tail);
+			if (!_deferEncodingSignalPublication) { signal.publishEncodingSignal(); }
+		}
+		return commitActiveMTLCommandBuffer(true);
+	}
+
+	setConfigurationResult(VK_ERROR_FEATURE_NOT_PRESENT);
+	VkResult result = getConfigurationResult();
+	finish();
+	return result;
+}
+
+MVKQueueSparseSubmission::MVKQueueSparseSubmission(MVKQueue* queue,
+												   const VkBindSparseInfo* pBindInfo,
+												   VkFence fence,
+												   uint64_t startEventValue,
+												   uint64_t doneEventValue)
+	: MVKQueueCommandBufferSubmission(queue, pBindInfo, fence, kMVKCommandUseQueueSubmit),
+	  _startEventValue(startEventValue),
+	  _doneEventValue(doneEventValue) {
+	if (@available(macOS 26.4, *)) {
+		for (uint32_t bufferIdx = 0; bufferIdx < pBindInfo->bufferBindCount; bufferIdx++) {
+			const VkSparseBufferMemoryBindInfo& bufferInfo = pBindInfo->pBufferBinds[bufferIdx];
+			auto* buffer = (MVKBuffer*)bufferInfo.buffer;
+			for (uint32_t bindIdx = 0; bindIdx < bufferInfo.bindCount; bindIdx++) {
+				const VkSparseMemoryBind& bind = bufferInfo.pBinds[bindIdx];
+				auto* memory = (MVKDeviceMemory*)bind.memory;
+				bool coalesce = !_bufferBinds.empty() &&
+					_bufferBinds.back().buffer == buffer &&
+					_bufferBinds.back().memory == memory &&
+					_bufferBinds.back().resourceOffset + _bufferBinds.back().size == bind.resourceOffset &&
+					(!memory || _bufferBinds.back().memoryOffset + _bufferBinds.back().size == bind.memoryOffset);
+				if (coalesce) {
+					_bufferBinds.back().size += bind.size;
+					continue;
+				}
+
+				MVKSparseBufferBind ownedBind = {
+					.buffer = buffer,
+					.memory = memory,
+					.mtlBuffer = [buffer->getMTLBuffer() retain],
+					.mtlHeap = memory ? [memory->getMTLPlacementSparseHeap() retain] : nil,
+					.resourceOffset = bind.resourceOffset,
+					.memoryOffset = memory ? bind.memoryOffset : 0,
+					.size = bind.size,
+				};
+				buffer->retain();
+				if (memory) { memory->retain(); }
+				_bufferBinds.push_back(ownedBind);
+			}
+		}
+
+		_mtl4Allocator = [getMTLDevice() newCommandAllocator];
+		_mtl4BarrierBuffer = [getMTLDevice() newCommandBuffer];
+		if (!_mtl4Allocator || !_mtl4BarrierBuffer) {
+			setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkQueueBindSparse(): Could not create the Metal sparse barrier."));
+			return;
+		}
+	}
+}
+
+MVKQueueSparseSubmission::~MVKQueueSparseSubmission() {
+	for (auto& bind : _bufferBinds) {
+		[bind.mtlBuffer release];
+		[bind.mtlHeap release];
+		if (bind.memory) { bind.memory->release(); }
+		bind.buffer->release();
+	}
+	[_mtl4BarrierBuffer release];
+	[_mtl4Allocator release];
+}
+#endif
 
 template <size_t N>
 void MVKQueueFullCommandBufferSubmission<N>::submitCommandBuffers() {
@@ -721,8 +1083,9 @@ bool MVKQueueFullCommandBufferSubmission<N>::requiresEncodingDependencyWait() {
 	for (auto& cbInfo : _cmdBuffers) {
 		hasDependentCommandBuffers |= cbInfo.commandBuffer->requiresEncodingDependencyWait();
 	}
-	return getEnabledAccelerationStructureFeatures().accelerationStructure &&
-		   !_waitSemaphores.empty() && hasDependentCommandBuffers;
+	return !_waitSemaphores.empty() &&
+		   ((getEnabledAccelerationStructureFeatures().accelerationStructure && hasDependentCommandBuffers) ||
+			_device->isPrivateSparseBufferEnabled());
 }
 
 template <size_t N>

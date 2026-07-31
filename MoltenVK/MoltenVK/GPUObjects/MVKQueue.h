@@ -32,6 +32,8 @@ class MVKQueue;
 class MVKQueueSubmission;
 class MVKPhysicalDevice;
 class MVKGPUCaptureScope;
+class MVKBuffer;
+class MVKDeviceMemory;
 
 
 #pragma mark -
@@ -99,6 +101,8 @@ public:
 	/** Submits the specified presentation command to the queue. */
 	VkResult submit(const VkPresentInfoKHR* pPresentInfo);
 
+	VkResult bindSparse(uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence);
+
 	/** Block the current thread until this queue is idle. */
 	VkResult waitIdle(MVKCommandUse cmdUse);
 
@@ -135,6 +139,9 @@ protected:
 	friend class MVKQueueSubmission;
 	friend class MVKQueueCommandBufferSubmission;
 	friend class MVKQueuePresentSurfaceSubmission;
+#if MVK_XCODE_26 && MVK_MACOS
+	friend class MVKQueueSparseSubmission;
+#endif
 
 	void propagateDebugName() override;
 	void initName();
@@ -152,6 +159,11 @@ protected:
 	std::condition_variable _execQueueConditionVariable;
 	uint32_t _execQueueJobCount = 0;
 	id<MTLCommandQueue> _mtlQueue = nil;
+#if MVK_XCODE_26 && MVK_MACOS
+	id<MTL4CommandQueue> _mtl4SparseQueue = nil;
+	id<MTLSharedEvent> _mtl4SparseEvent = nil;
+	uint64_t _mtl4SparseEventValue = 0;
+#endif
 	NSString* _mtlCmdBuffLabelBeginCommandBuffer = nil;
 	NSString* _mtlCmdBuffLabelQueueSubmit = nil;
 	NSString* _mtlCmdBuffLabelQueuePresent = nil;
@@ -264,6 +276,14 @@ public:
 protected:
 	friend MVKCommandBuffer;
 	friend MVKCommandEncoder;
+#if MVK_XCODE_26 && MVK_MACOS
+	friend class MVKQueueSparseSubmission;
+#endif
+
+	MVKQueueCommandBufferSubmission(MVKQueue* queue,
+									const VkBindSparseInfo* pBindInfo,
+									VkFence fence,
+									MVKCommandUse cmdUse);
 
 	id<MTLCommandBuffer> getActiveMTLCommandBuffer();
 	void setActiveMTLCommandBuffer(id<MTLCommandBuffer> mtlCmdBuff);
@@ -279,6 +299,41 @@ protected:
 	MVKCommandUse _commandUse = kMVKCommandUseNone;
 	bool _emulatedWaitDone = false;		//Used to track if we've already waited for emulated semaphores.
 };
+
+#if MVK_XCODE_26 && MVK_MACOS
+typedef struct MVKSparseBufferBind {
+	MVKBuffer* buffer;
+	MVKDeviceMemory* memory;
+	id<MTLBuffer> mtlBuffer;
+	id<MTLHeap> mtlHeap;
+	VkDeviceSize resourceOffset;
+	VkDeviceSize memoryOffset;
+	VkDeviceSize size;
+} MVKSparseBufferBind;
+
+class MVKQueueSparseSubmission : public MVKQueueCommandBufferSubmission {
+
+public:
+	VkResult execute() override;
+
+	MVKQueueSparseSubmission(MVKQueue* queue,
+							 const VkBindSparseInfo* pBindInfo,
+							 VkFence fence,
+							 uint64_t startEventValue,
+							 uint64_t doneEventValue);
+
+	~MVKQueueSparseSubmission() override;
+
+protected:
+	bool requiresEncodingDependencyWait() override { return !_waitSemaphores.empty(); }
+
+	MVKSmallVector<MVKSparseBufferBind, 4> _bufferBinds;
+	id<MTL4CommandAllocator> _mtl4Allocator = nil;
+	id<MTL4CommandBuffer> _mtl4BarrierBuffer = nil;
+	uint64_t _startEventValue;
+	uint64_t _doneEventValue;
+};
+#endif
 
 
 /**

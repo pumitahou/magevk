@@ -24,6 +24,7 @@
 #include "mvk_datatypes.hpp"
 #include "MVKFoundation.h"
 #include <cstdlib>
+#include <limits>
 #include <stdlib.h>
 #include <os/lock.h>
 #include <new>
@@ -227,13 +228,53 @@ bool MVKDeviceMemory::ensureMTLHeap() {
 	// to untracked, since Vulkan uses explicit barriers anyway.
 	heapDesc.hazardTrackingMode = MTLHazardTrackingModeTracked;
 	heapDesc.size = _allocationSize;
+	bool placementSparseHeap = false;
+#if MVK_XCODE_26 && MVK_MACOS
+	if (_device->isPrivateSparseBufferEnabled() && _mtlStorageMode == MTLStorageModePrivate) {
+		if (@available(macOS 26.4, *)) {
+			VkDeviceSize heapSize = mvkAlignByteCount(_allocationSize, kMVKPrivateSparseBufferPageSize);
+			if (heapSize < _allocationSize || heapSize > std::numeric_limits<NSUInteger>::max()) {
+				[heapDesc release];
+				return false;
+			}
+			heapDesc.size = (NSUInteger)heapSize;
+			heapDesc.maxCompatiblePlacementSparsePageSize = MTLSparsePageSize16;
+			placementSparseHeap = true;
+		}
+	}
+#endif
 	_mtlHeap = [getMTLDevice() newHeapWithDescriptor: heapDesc];	// retained
 	[heapDesc release];
 	if (!_mtlHeap) { return false; }
+	if (placementSparseHeap) {
+		_isPlacementSparseHeapResident = true;
+		_device->makeResident(_mtlHeap);
+	}
 
 	propagateDebugName();
 
 	return true;
+}
+
+bool MVKDeviceMemory::isPlacementSparseCompatible() const {
+	VkMemoryPropertyFlags unsupportedProperties =
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
+		VK_MEMORY_PROPERTY_PROTECTED_BIT;
+	return _device->isPrivateSparseBufferEnabled() &&
+		_mtlHeap &&
+		_mtlHeap.type == MTLHeapTypePlacement &&
+		_mtlStorageMode == MTLStorageModePrivate &&
+		!(_vkMemPropFlags & unsupportedProperties) &&
+		!(_vkMemAllocFlags & ~VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT) &&
+		!_isDedicated &&
+		!_isHostMemImported &&
+		!_externalMemoryHandleType &&
+		_allocationSize;
+}
+
+id<MTLHeap> MVKDeviceMemory::getMTLPlacementSparseHeap() {
+	return isPlacementSparseCompatible() ? _mtlHeap : nil;
 }
 
 bool MVKDeviceMemory::isAccelerationStructurePlacementCompatible() const {
@@ -445,6 +486,11 @@ MVKDeviceMemory::MVKDeviceMemory(MVKDevice* device,
 		}
 	}
 
+	if (dedicatedBuffer && ((MVKBuffer*)dedicatedBuffer)->isPrivateSparseBuffer()) {
+		setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkAllocateMemory(): Dedicated sparse buffer allocations are not supported."));
+		return;
+	}
+
 	initExternalMemory(dedicatedImage, wantsHeap);	// After setting _isDedicated
 
 	// "Dedicated" means this memory can only be used for this image or buffer.
@@ -559,6 +605,7 @@ MVKDeviceMemory::~MVKDeviceMemory() {
 		[buf release];
 	}
 
+	if (_isPlacementSparseHeapResident) { _device->removeResidency(_mtlHeap); }
 	[_mtlHeap release];
 	_mtlHeap = nil;
 

@@ -5680,6 +5680,8 @@ void MVKDevice::initPhysicalDevice(MVKPhysicalDevice* physicalDevice, const VkDe
 void MVKDevice::enableFeatures(const VkDeviceCreateInfo* pCreateInfo) {
 	VkStructureType sType;
 	VkBaseInStructure* pPrevStruct = nullptr;
+	bool sparseBindingRequested = pCreateInfo->pEnabledFeatures && pCreateInfo->pEnabledFeatures->sparseBinding;
+	bool sparseResidencyBufferRequested = pCreateInfo->pEnabledFeatures && pCreateInfo->pEnabledFeatures->sparseResidencyBuffer;
 
 	// Clear and set the sType of each VkDevice enabled feature iVar (_enabledXXXFeatures),
 	// and create a chain of identical structs that will be sent to the MVKPhysicalDevice
@@ -5728,6 +5730,8 @@ void MVKDevice::enableFeatures(const VkDeviceCreateInfo* pCreateInfo) {
 		switch ((uint32_t)next->sType) {
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: {
 				auto* requestedFeatures = (VkPhysicalDeviceFeatures2*)next;
+				sparseBindingRequested |= requestedFeatures->features.sparseBinding;
+				sparseResidencyBufferRequested |= requestedFeatures->features.sparseResidencyBuffer;
 				enableFeatures(requestedFeatures,
 							   &_enabledFeatures.robustBufferAccess,
 							   &requestedFeatures->features.robustBufferAccess,
@@ -5834,6 +5838,18 @@ void MVKDevice::enableFeatures(const VkDeviceCreateInfo* pCreateInfo) {
 				break;
 		}
 	}
+
+#if MVK_XCODE_26 && MVK_MACOS
+	if (sparseBindingRequested &&
+		sparseResidencyBufferRequested &&
+		_physicalDevice->_metalFeatures.placementHeaps &&
+		mvkGetEnvVarNumber("MAGE_MVK_ALLOW_UNSUPPORTED_FEATURES") != 0.0 &&
+		mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") != 0.0) {
+		if (@available(macOS 26.4, *)) {
+			_privateSparseBufferEnabled = _physicalDevice->getMTLDevice().supportsPlacementSparse;
+		}
+	}
+#endif
 }
 
 template<typename S>
@@ -5847,12 +5863,17 @@ void MVKDevice::enableFeatures(S* pEnabled, const S* pRequested, const S* pAvail
 
 template<typename S>
 void MVKDevice::enableFeatures(S* pRequested, VkBool32* pEnabledBools, const VkBool32* pRequestedBools, const VkBool32* pAvailableBools, uint32_t count) {
+	static const bool allowUnsupportedFeatures = mvkGetEnvVarNumber("MAGE_MVK_ALLOW_UNSUPPORTED_FEATURES") != 0.0;
 	for (uint32_t i = 0; i < count; i++) {
 		pEnabledBools[i] = pRequestedBools[i] && pAvailableBools[i];
 		if (pRequestedBools[i] && !pAvailableBools[i]) {
 			uintptr_t mbrOffset = (uintptr_t)&pRequestedBools[i] - (uintptr_t)mvkGetAddressOfFirstMember(pRequested);
 			size_t mbrIdxOrd = (mbrOffset / sizeof(VkBool32)) + 1;
-			setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateDevice(): Requested physical device feature specified by the %zu%s flag in %s is not available on this device.", mbrIdxOrd, mvk::getOrdinalSuffix(mbrIdxOrd), mvk::getTypeName(pRequested).c_str()));
+			if (allowUnsupportedFeatures) {
+				reportWarning(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateDevice(): Leaving unavailable physical device feature specified by the %zu%s flag in %s disabled.", mbrIdxOrd, mvk::getOrdinalSuffix(mbrIdxOrd), mvk::getTypeName(pRequested).c_str());
+			} else {
+				setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateDevice(): Requested physical device feature specified by the %zu%s flag in %s is not available on this device.", mbrIdxOrd, mvk::getOrdinalSuffix(mbrIdxOrd), mvk::getTypeName(pRequested).c_str()));
+			}
 		}
 	}
 }

@@ -24,6 +24,8 @@
 class MVKCommandEncoder;
 class MVKAccelerationStructure;
 
+static constexpr VkDeviceSize kMVKPrivateSparseBufferPageSize = 16 * 1024;
+
 
 #pragma mark MVKBuffer
 
@@ -65,6 +67,8 @@ public:
     /** Returns the intended usage of this buffer. */
     VkBufferUsageFlags2 getUsage() const { return _usage; }
 
+	bool isPrivateSparseBuffer() const { return _isPrivateSparseBuffer; }
+
 
 #pragma mark Metal
 
@@ -102,6 +106,7 @@ protected:
 	id<MTLBuffer> _mtlBuffer = nil;
 	MVKSmallVector<MVKAccelerationStructure*, 1> _accelerationStructures;
     std::mutex _lock;
+	bool _isPrivateSparseBuffer = false;
 };
 
 

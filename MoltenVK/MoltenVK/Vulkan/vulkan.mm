@@ -662,7 +662,7 @@ MVK_PUBLIC_VULKAN_SYMBOL VkResult vkQueueBindSparse(
 
 	MVKTraceVulkanCallStart();
 	MVKQueue* mvkQ = MVKQueue::getMVKQueue(queue);
-	VkResult rslt = mvkQ->reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse binding is not supported.");
+	VkResult rslt = mvkQ->bindSparse(bindInfoCount, pBindInfo, fence);
 	MVKTraceVulkanCallEnd();
 	return rslt;
 }

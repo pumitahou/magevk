@@ -43,6 +43,13 @@ void MVKBuffer::propagateDebugName() {
 #pragma mark Resource memory
 
 VkResult MVKBuffer::getMemoryRequirements(VkMemoryRequirements* pMemoryRequirements) {
+	if (_isPrivateSparseBuffer) {
+		pMemoryRequirements->size = mvkAlignByteCount(getByteCount(), kMVKPrivateSparseBufferPageSize);
+		pMemoryRequirements->alignment = kMVKPrivateSparseBufferPageSize;
+		pMemoryRequirements->memoryTypeBits = getPhysicalDevice()->getPrivateMemoryTypes() &
+											 ~getPhysicalDevice()->getLazilyAllocatedMemoryTypes();
+		return VK_SUCCESS;
+	}
 	bool accelerationStructure = mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 	if (getMetalFeatures().placementHeaps) {
 		MTLSizeAndAlign sizeAndAlign = [getMTLDevice() heapBufferSizeAndAlignWithLength: getByteCount()
@@ -85,6 +92,9 @@ VkResult MVKBuffer::getMemoryRequirements(VkMemoryRequirements2* pMemoryRequirem
 }
 
 VkResult MVKBuffer::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDeviceSize memOffset) {
+	if (_isPrivateSparseBuffer) {
+		return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkBindBufferMemory(): Sparse buffers must be bound with vkQueueBindSparse().");
+	}
 	MVKSmallVector<MVKAccelerationStructure*, 1> accelerationStructures;
 	id<MTLBuffer> failedMTLBuffer = nil;
 	VkResult result = VK_SUCCESS;
@@ -264,6 +274,48 @@ MVKBuffer::MVKBuffer(MVKDevice* device, const VkBufferCreateInfo* pCreateInfo) :
 				break;
 		}
 	}
+
+	VkBufferCreateFlags sparseFlags = pCreateInfo->flags &
+		(VK_BUFFER_CREATE_SPARSE_BINDING_BIT |
+		 VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT |
+		 VK_BUFFER_CREATE_SPARSE_ALIASED_BIT);
+	if (!sparseFlags) { return; }
+
+	VkBufferCreateFlags requiredSparseFlags =
+		VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+	bool supported = device->isPrivateSparseBufferEnabled() &&
+		pCreateInfo->flags == requiredSparseFlags &&
+		!_externalMemoryHandleTypes &&
+		!mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+	if (!supported) {
+		setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateBuffer(): This sparse buffer configuration is not supported."));
+		return;
+	}
+
+#if MVK_XCODE_26 && MVK_MACOS
+	if (@available(macOS 26.4, *)) {
+		VkDeviceSize mtlLength = mvkAlignByteCount(_byteCount, kMVKPrivateSparseBufferPageSize);
+		if (mtlLength < _byteCount || mtlLength > std::numeric_limits<NSUInteger>::max()) {
+			setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkCreateBuffer(): Sparse buffer size is too large."));
+			return;
+		}
+		_mtlBuffer = [getMTLDevice() newBufferWithLength:(NSUInteger)mtlLength
+												options:MTLResourceStorageModePrivate
+								placementSparsePageSize:MTLSparsePageSize16];
+		if (!_mtlBuffer || _mtlBuffer.sparseBufferTier != MTLBufferSparseTier1) {
+			[_mtlBuffer release];
+			_mtlBuffer = nil;
+			setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkCreateBuffer(): Could not create a placement-sparse Metal buffer."));
+			return;
+		}
+		_isPrivateSparseBuffer = true;
+		_device->makeResident(_mtlBuffer);
+		_device->getLiveResources().add(_mtlBuffer);
+		return;
+	}
+#endif
+
+	setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateBuffer(): Placement-sparse Metal buffers are not available."));
 }
 
 void MVKBuffer::initExternalMemory(VkExternalMemoryHandleTypeFlags handleTypes) {

@@ -123,6 +123,10 @@ public:
 	/** Returns the Metal heap underlying this memory allocation. */
 	id<MTLHeap> getMTLHeap() { return _mtlHeap; }
 
+	id<MTLHeap> getMTLPlacementSparseHeap();
+
+	bool isPlacementSparseCompatible() const;
+
 	bool isAccelerationStructurePlacementCompatible() const;
 
 	/** Returns the Metal storage mode used by this memory allocation. */
@@ -192,6 +196,7 @@ protected:
 	MTLCPUCacheMode _mtlCPUCacheMode;
 	bool _isDedicated = false;
 	bool _isHostMemImported = false;
+	bool _isPlacementSparseHeapResident = false;
 	VkExternalMemoryHandleTypeFlags _externalMemoryHandleType = 0u;
 };
 
