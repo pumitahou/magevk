@@ -1190,7 +1190,7 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkCmdTraceRaysIndirect2KHR(
 	MVKTraceVulkanCallStart();
 	MVKCommandBuffer::getMVKCommandBuffer(commandBuffer)->reportError(
 		VK_ERROR_FEATURE_NOT_PRESENT,
-		"vkCmdTraceRaysIndirect2KHR(): Indirect shader binding tables are not supported by Metal.");
+		"vkCmdTraceRaysIndirect2KHR(): Indirect shader binding tables are not supported.");
 	MVKTraceVulkanCallEnd();
 }
 
