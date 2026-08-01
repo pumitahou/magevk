@@ -35,6 +35,11 @@ static inline MTLAttributeFormat mvkMTLAccelerationStructureVertexFormatFromVkFo
 		case VK_FORMAT_R16G16B16A16_SFLOAT: return MTLAttributeFormatHalf4;
 		case VK_FORMAT_R16G16_SNORM: return MTLAttributeFormatShort2Normalized;
 		case VK_FORMAT_R16G16B16A16_SNORM: return MTLAttributeFormatShort4Normalized;
+		// Mage: advertise UNORM variants as AS vertex formats too. Windows drivers
+		// set ACCELERATION_STRUCTURE_VERTEX_BUFFER on these, and the DOOM: The Dark
+		// Ages launcher gates on R16G16B16A16_UNORM having that bit.
+		case VK_FORMAT_R16G16_UNORM: return MTLAttributeFormatUShort2Normalized;
+		case VK_FORMAT_R16G16B16A16_UNORM: return MTLAttributeFormatUShort4Normalized;
 		default: return MTLAttributeFormatInvalid;
 	}
 }
