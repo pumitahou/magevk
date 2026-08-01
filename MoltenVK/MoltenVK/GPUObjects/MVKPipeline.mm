@@ -2564,7 +2564,8 @@ MVKMTLFunction MVKComputePipeline::getMTLFunction(const VkPipelineShaderStageCre
 											  spv::ExecutionModel executionModel,
 											  VkPipelineCreationFeedback* pStageFB,
 											  uint32_t rayTracingStageDepth,
-											  bool rayGenerationVisible) {
+											  bool rayGenerationVisible,
+											  MTLFunctionOptions mtlFuncOptions) {
 
 	VkShaderStageFlagBits expectedStage = VK_SHADER_STAGE_COMPUTE_BIT;
 	switch (executionModel) {
@@ -2667,7 +2668,7 @@ MVKMTLFunction MVKComputePipeline::getMTLFunction(const VkPipelineShaderStageCre
 	}
 	shaderConfig.options.mslOptions.replace_recursive_inputs = mvkOSVersionIsAtLeast(14.0, 17.0, 1.0);
 
-    MVKMTLFunction func = _module->getMTLFunction(&shaderConfig, pSS->pSpecializationInfo, this, pStageFB);
+    MVKMTLFunction func = _module->getMTLFunction(&shaderConfig, pSS->pSpecializationInfo, this, pStageFB, mtlFuncOptions);
 	if ( !func.getMTLFunction() ) {
 		if (shouldFailOnPipelineCompileRequired()) {
 			setConfigurationResult(VK_PIPELINE_COMPILE_REQUIRED);
@@ -2994,6 +2995,16 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 		return;
 	}
 
+	// Mage: link RT stage functions as pipeline-independent binaries (macOS 26+).
+	// Each function is compiled to GPU binary individually at creation, and pipeline
+	// creation then only links pre-compiled binaries. AIR-linking all stages into one
+	// module crashes the AGX backend on large RT pipelines (e.g. DOOM: The Dark Ages
+	// links ~72 functions / ~236k lines of MSL, which trips a fatal LLVM error).
+	bool linkBinaryFunctions = mvkOSVersionIsAtLeast(26.0, 26.0, 26.0);
+	MTLFunctionOptions rtFuncOptions = linkBinaryFunctions
+		? (MTLFunctionOptions)(MTLFunctionOptionCompileToBinary | MTLFunctionOptionPipelineIndependent)
+		: (MTLFunctionOptions)0;
+
 	auto compileStage = [&](uint32_t stageIndex, spv::ExecutionModel model, uint32_t depth,
 							bool rayGenerationVisible = false) {
 		_module = nullptr;
@@ -3003,7 +3014,7 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 			stageFeedback = &feedbackInfo->pPipelineStageCreationFeedbacks[stageIndex];
 		}
 		MVKMTLFunction function = getMTLFunction(&pCreateInfo->pStages[stageIndex], model,
-											 stageFeedback, depth, rayGenerationVisible);
+											 stageFeedback, depth, rayGenerationVisible, rtFuncOptions);
 		if (_ownsModule) { delete _module; }
 		_module = nullptr;
 		_ownsModule = false;
@@ -3249,7 +3260,11 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 		stageFunctions[i] = addFunction(_shaderStages[i].function.getMTLFunction());
 		recursiveStageFunctions[i] = addFunction(_shaderStages[i].recursiveFunction.getMTLFunction());
 	}
-	linkedFunctions.functions = functions;
+	if (linkBinaryFunctions) {
+		linkedFunctions.binaryFunctions = functions;
+	} else {
+		linkedFunctions.functions = functions;
+	}
 	[canonicalFunctions release];
 	[functions release];
 	MTLComputePipelineDescriptor* descriptor = [MTLComputePipelineDescriptor new];

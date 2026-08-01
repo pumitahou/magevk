@@ -838,14 +838,22 @@ VkResult MVKAccelerationStructure::retainFullWriteGeneration(
 	if (_isDestroyed || !_storage) { return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
 	uint64_t nativeCapacity = _nativeCapacity;
 	if (requiredNativeSize > nativeCapacity) {
-		if (requiredNativeSize > _size) { return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+		/* Native storage is only carved from the game's buffer when it fits;
+		 * overflow generations are privately allocated, so a copy destination
+		 * created smaller than the source's native size (e.g. idTech's
+		 * compact-then-clone flow) may grow instead of failing. */
 		nativeCapacity = requiredNativeSize;
 	}
-	if (requiredMetadataSize > _metadataCapacity) { return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+	/* The instance-metadata buffer is a separate device-private allocation, so
+	 * it is not bounded by _size; grow its capacity instead of failing when a
+	 * compacted destination must hold a larger source's metadata. */
+	uint64_t metadataCapacity = _metadataCapacity;
+	if (requiredMetadataSize > metadataCapacity) { metadataCapacity = requiredMetadataSize; }
 	VkResult result = _storage->retainFullWriteGeneration(
-		nativeCapacity, requiredNativeSize, requiredMetadataSize, generation);
-	if (result >= 0 && generation && nativeCapacity != _nativeCapacity) {
-		_nativeCapacity = nativeCapacity;
+		nativeCapacity, requiredNativeSize, metadataCapacity, generation);
+	if (result >= 0 && generation) {
+		if (nativeCapacity != _nativeCapacity) { _nativeCapacity = nativeCapacity; }
+		if (metadataCapacity != _metadataCapacity) { _metadataCapacity = metadataCapacity; }
 	}
 	return result;
 }

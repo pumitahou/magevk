@@ -924,7 +924,7 @@ void MVKPhysicalDevice::getProperties(VkPhysicalDeviceProperties2* properties) {
 	supportedProps13.minSubgroupSize = _metalFeatures.minSubgroupSize;
 	supportedProps13.maxSubgroupSize = _metalFeatures.maxSubgroupSize;
 	supportedProps13.maxComputeWorkgroupSubgroups = _properties.limits.maxComputeWorkGroupInvocations / _metalFeatures.minSubgroupSize;
-	supportedProps13.requiredSubgroupSizeStages = 0;
+	supportedProps13.requiredSubgroupSizeStages = VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT;
 	supportedProps13.maxInlineUniformBlockSize = _metalFeatures.dynamicMTLBufferSize;
 	supportedProps13.maxPerStageDescriptorInlineUniformBlocks = _metalFeatures.dynamicMTLBufferSize ? _metalFeatures.maxPerStageDynamicMTLBufferCount - 1 : 0;    // Less one for push constants
 	supportedProps13.maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks = supportedProps13.maxPerStageDescriptorInlineUniformBlocks;

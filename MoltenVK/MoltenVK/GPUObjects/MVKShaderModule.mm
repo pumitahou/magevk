@@ -71,7 +71,8 @@ static uint32_t getWorkgroupDimensionSize(const SPIRVWorkgroupSizeDimension& wgD
 
 MVKMTLFunction MVKShaderLibrary::getMTLFunction(const VkSpecializationInfo* pSpecializationInfo,
 												VkPipelineCreationFeedback* pShaderFeedback,
-												MVKShaderModule* shaderModule) {
+												MVKShaderModule* shaderModule,
+												MTLFunctionOptions mtlFuncOptions) {
 
 	if ( !_mtlLibrary ) { return MVKMTLFunctionNull; }
 
@@ -150,14 +151,32 @@ MVKMTLFunction MVKShaderLibrary::getMTLFunction(const VkSpecializationInfo* pSpe
 					}
 
 					// Compile the specialized Metal function, and use it instead of the unspecialized Metal function.
-					MVKFunctionSpecializer fs(_owner);
 					if (pShaderFeedback) {
 						startTime = mvkGetTimestamp();
 					}
-					mtlFunc = [fs.newMTLFunction(lib, mtlFuncName, mtlFCVals) autorelease];
+					if (mtlFuncOptions) {
+						// Mage: pipeline-independent binary functions for RT pipelines. Compile
+						// each function to GPU binary individually so pipeline creation links
+						// pre-compiled binaries instead of recompiling one giant module, which
+						// crashes the AGX backend on large RT pipelines (e.g. DOOM: The Dark Ages).
+						MTLFunctionDescriptor* fDesc = [MTLFunctionDescriptor functionDescriptor];
+						fDesc.name = mtlFuncName;
+						fDesc.options = mtlFuncOptions;
+						fDesc.constantValues = mtlFCVals;
+						mtlFunc = [[lib newFunctionWithDescriptor: fDesc error: nil] autorelease];
+					} else {
+						MVKFunctionSpecializer fs(_owner);
+						mtlFunc = [fs.newMTLFunction(lib, mtlFuncName, mtlFCVals) autorelease];
+					}
 					if (pShaderFeedback) {
 						pShaderFeedback->duration += mvkGetElapsedNanoseconds(startTime);
 					}
+				} else if (mtlFuncOptions) {
+					// Mage: no function constants; compile to binary directly via descriptor.
+					MTLFunctionDescriptor* fDesc = [MTLFunctionDescriptor functionDescriptor];
+					fDesc.name = mtlFuncName;
+					fDesc.options = mtlFuncOptions;
+					mtlFunc = [[lib newFunctionWithDescriptor: fDesc error: nil] autorelease];
 				}
 			}
 
@@ -396,7 +415,8 @@ MVKShaderLibraryCache::~MVKShaderLibraryCache() {
 MVKMTLFunction MVKShaderModule::getMTLFunction(SPIRVToMSLConversionConfiguration* pShaderConfig,
 											   const VkSpecializationInfo* pSpecializationInfo,
 											   MVKPipeline* pipeline,
-											   VkPipelineCreationFeedback* pShaderFeedback) {
+											   VkPipelineCreationFeedback* pShaderFeedback,
+											   MTLFunctionOptions mtlFuncOptions) {
 	MVKShaderLibrary* mvkLib = _directMSLLibrary;
 	if ( !mvkLib ) {
 		uint64_t startTime = pShaderFeedback ? mvkGetTimestamp() : getPerformanceTimestamp();
@@ -412,7 +432,7 @@ MVKMTLFunction MVKShaderModule::getMTLFunction(SPIRVToMSLConversionConfiguration
 		pShaderConfig->markAllInterfaceVarsAndResourcesUsed();
 	}
 
-	return mvkLib ? mvkLib->getMTLFunction(pSpecializationInfo, pShaderFeedback, this) : MVKMTLFunctionNull;
+	return mvkLib ? mvkLib->getMTLFunction(pSpecializationInfo, pShaderFeedback, this, mtlFuncOptions) : MVKMTLFunctionNull;
 }
 
 bool MVKShaderModule::convert(SPIRVToMSLConversionConfiguration* pShaderConfig,
