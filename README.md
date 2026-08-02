@@ -1,3 +1,81 @@
+MageVK
+======
+
+MoltenVK for gaming on Apple silicon. MageVK takes
+[MoltenVK](https://github.com/KhronosGroup/MoltenVK) — Vulkan layered
+on top of Metal — and extends it for modern game workloads, developed
+and validated against real titles. General improvements are fed back
+upstream where possible.
+
+Part of the [Mage](https://github.com/dttdrv/mage) stack.
+
+Base: MoltenVK main, plus Metal-backed ray tracing (ray queries and
+ray tracing pipelines) — the work proposed upstream in
+[KhronosGroup/MoltenVK#2771](https://github.com/KhronosGroup/MoltenVK/pull/2771).
+
+Shader translation lives in a companion SPIRV-Cross fork,
+[magevk-spirv-cross](https://github.com/dttdrv/magevk-spirv-cross):
+MSL emission for ray tracing (a native `traceRay` fast path, ray
+query, ray tracing position fetch) and subgroup builtins in vertex
+functions. Build MageVK against it with
+`-DCPM_SPIRV-Cross_SOURCE=<checkout>`.
+
+What MageVK adds on top
+-----------------------
+
+- **Ray tracing**: `VK_KHR_ray_query` and
+  `VK_KHR_ray_tracing_pipeline` on Metal, including acceleration
+  structures, ray tracing maintenance1, and lifetime/generation fixes
+  for streamed geometry (empty-geometry BLAS, grown generations).
+- **Sparse memory**: MTL4 placement-based sparse buffers and sparse
+  images — `VkSparseImageFormatProperties`, sparse queue binds.
+  Engines with virtual texturing (id Tech 8) require it.
+- **GPU identity spoofing** (`MAGE_VK_VENDOR_ID`,
+  `MAGE_VK_DEVICE_ID`, `MAGE_VK_DEVICE_NAME`,
+  `MAGE_VK_DRIVER_VERSION`, `MAGE_VK_DEVICE_TYPE`): present a
+  different GPU to games whose launchers hard-gate on vendor tables.
+- **`MAGE_VK_HEAP_SIZE_MB`**: caps the advertised device-local heap
+  and the `VK_EXT_memory_budget` budget. On unified memory, reporting
+  all of system RAM as VRAM makes engines over-commit and starve the
+  OS.
+- **`MAGE_MVK_RGB9E5_BLEND`**: restores render-target and blend caps
+  for `RGB9E5Float`, disabled upstream on macOS. Engines that blend
+  HDR effects into that format (fire, particles, bloom) silently lose
+  them otherwise.
+- **`MAGE_MVK_ALLOW_UNSUPPORTED_FEATURES`**: advertises feature bits
+  an engine hard-requires at device creation.
+- **`MVK_CONFIG_FRAME_RATE_CAP`**: present pacing at the Vulkan level.
+
+Building
+--------
+
+Xcode 27 or later, CMake, network access for the remaining
+dependencies:
+
+    git clone https://github.com/dttdrv/magevk
+    git clone https://github.com/dttdrv/magevk-spirv-cross
+    cmake -S magevk -B build \
+      -DCPM_SPIRV-Cross_SOURCE="$PWD/magevk-spirv-cross" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+    cmake --build build --parallel
+
+Result: `build/MoltenVK/libMoltenVK.dylib` (universal). The x86_64
+slice is what Wine loads under Rosetta 2.
+
+Status
+------
+
+Experimental. Built and tested on macOS 26+ against id Tech 8
+(DOOM: The Dark Ages). Not a general-purpose MoltenVK replacement —
+upstream MoltenVK remains the right base for non-gaming work.
+
+Everything below is the upstream MoltenVK README, kept for reference
+and attribution.
+
+---
+
 <a class="site-logo" href="https://github.com/KhronosGroup/MoltenVK" title="MoltenVK">
 	<img src="Docs/images/MoltenVK-Logo-Banner.png" alt="MoltenVK" style="width:256px;height:auto">
 </a>
