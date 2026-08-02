@@ -19,6 +19,7 @@
 #include "MVKPixelFormats.h"
 #include "MVKDevice.h"
 #include "MVKFoundation.h"
+#include "MVKOSExtensions.h"
 #include "mvk_datatypes.hpp"
 #include <string>
 
@@ -1410,7 +1411,13 @@ void MVKPixelFormats::modifyMTLFormatCapabilities(const MVKMTLDeviceCapabilities
 	// Blending is actually supported for RGB9E5Float, but format channels cannot
 	// be individually write-enabled during blending on macOS. Disabling blending
 	// on macOS is the least-intrusive way to handle this in a Vulkan-friendly way.
-	disableMTLPixFmtCapsIfGPU( Mac2, RGB9E5Float, Blend);
+	// Mage: MAGE_MVK_RGB9E5_BLEND=1 re-enables the blend capability anyway. Games
+	// that render HDR effects into E5B9G9R9 targets with full write masks
+	// (id Tech 8 among them) lose all additive blending otherwise; the
+	// masked-channels-leak hazard only matters for partial write masks.
+	if ( !mvkGetEnvVarNumber("MAGE_MVK_RGB9E5_BLEND") ) {
+		disableMTLPixFmtCapsIfGPU( Mac2, RGB9E5Float, Blend);
+	}
 
 	// RGB9E5Float cannot be used as a render target on the simulator
 	disableMTLPixFmtCapsIf( MVK_OS_SIMULATOR, RGB9E5Float, ColorAtt );
