@@ -394,7 +394,12 @@ MVKAccelerationStructureStorageGeneration* MVKAccelerationStructure::retainCurre
 	std::lock_guard<std::mutex> lock(_lock);
 	if (_isDestroyed || !_isBufferBound || !_storage) { return nullptr; }
 	auto* generation = _storage->retainCurrentGeneration();
-	if (generation && generation->getNativeSize() > _size) {
+	/* Compare against the grown capacity, not the Vulkan size: compact-then-clone
+	 * destinations legitimately hold generations whose native size exceeds _size
+	 * (growth path above raises _nativeCapacity to cover them). Rejecting them
+	 * here silently drops the AS from the address/reference tables and culls its
+	 * geometry from all ray traversal. */
+	if (generation && generation->getNativeSize() > _nativeCapacity) {
 		generation->release();
 		return nullptr;
 	}
@@ -557,9 +562,21 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
                 }
             }
 			if (!buildInfo.geometryCount) {
-				id<MTLBuffer> emptyVertexBuffer = [getMTLDevice()
-					newBufferWithLength:sizeof(float) * 3
-					options:MTLResourceStorageModePrivate];
+				/* Shared, never-freed dummy buffer: submit command buffers run with
+				 * retainedReferences = NO, so a locally-allocated temp buffer could
+				 * be released while an in-flight AS build still reads it, which
+				 * aborts the command buffer with Invalid Resource and loses the
+				 * device. Contents are never meaningfully read. */
+				static id<MTLBuffer> emptyVertexBuffer = nil;
+				static std::mutex emptyVertexBufferLock;
+				{
+					std::lock_guard<std::mutex> lock(emptyVertexBufferLock);
+					if (!emptyVertexBuffer) {
+						emptyVertexBuffer = [getMTLDevice()
+							newBufferWithLength:sizeof(float) * 3
+							options:MTLResourceStorageModePrivate];
+					}
+				}
 				if (!emptyVertexBuffer) {
 					[geoms release];
 					[primitive release];
@@ -571,7 +588,6 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
 				emptyGeometry.vertexStride = sizeof(float) * 3;
 				[geoms addObject:emptyGeometry];
 				[emptyGeometry release];
-				[emptyVertexBuffer release];
 			}
 
             primitive.geometryDescriptors = geoms;
