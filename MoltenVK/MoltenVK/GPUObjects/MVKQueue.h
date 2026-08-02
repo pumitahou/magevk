@@ -33,6 +33,7 @@ class MVKQueueSubmission;
 class MVKPhysicalDevice;
 class MVKGPUCaptureScope;
 class MVKBuffer;
+class MVKImage;
 class MVKDeviceMemory;
 
 
@@ -311,6 +312,18 @@ typedef struct MVKSparseBufferBind {
 	VkDeviceSize size;
 } MVKSparseBufferBind;
 
+typedef struct MVKSparseImageBind {
+	MVKImage* image;
+	MVKDeviceMemory* memory;
+	id<MTLTexture> mtlTexture;
+	id<MTLHeap> mtlHeap;
+	MTLRegion tileRegion;		// Region in sparse tiles. For mip tail binds, origin is zero and size is {tailTileCount, 1, 1}.
+	NSUInteger textureLevel;	// Mip level, or the first mip level in the tail for opaque binds.
+	NSUInteger textureSlice;
+	NSUInteger heapOffset;		// In sparse tiles.
+	bool isMap;
+} MVKSparseImageBind;
+
 class MVKQueueSparseSubmission : public MVKQueueCommandBufferSubmission {
 
 public:
@@ -328,6 +341,7 @@ protected:
 	bool requiresEncodingDependencyWait() override { return !_waitSemaphores.empty(); }
 
 	MVKSmallVector<MVKSparseBufferBind, 4> _bufferBinds;
+	MVKSmallVector<MVKSparseImageBind, 4> _imageBinds;
 	id<MTL4CommandAllocator> _mtl4Allocator = nil;
 	id<MTL4CommandBuffer> _mtl4BarrierBuffer = nil;
 	uint64_t _startEventValue;

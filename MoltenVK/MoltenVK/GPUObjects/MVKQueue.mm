@@ -19,6 +19,8 @@
 #include "MVKInstance.h"
 #include "MVKQueue.h"
 #include "MVKBuffer.h"
+#include "MVKImage.h"
+#include "MVKDeviceMemory.h"
 #include "MVKSurface.h"
 #include "MVKSwapchain.h"
 #include "MVKSync.h"
@@ -193,8 +195,9 @@ VkResult MVKQueue::bindSparse(uint32_t bindInfoCount, const VkBindSparseInfo* pB
 		if (bindInfo.sType != VK_STRUCTURE_TYPE_BIND_SPARSE_INFO ||
 			(bindInfo.waitSemaphoreCount && !bindInfo.pWaitSemaphores) ||
 			(bindInfo.bufferBindCount && !bindInfo.pBufferBinds) ||
-			(bindInfo.signalSemaphoreCount && !bindInfo.pSignalSemaphores) ||
-			bindInfo.imageOpaqueBindCount || bindInfo.imageBindCount) {
+			(bindInfo.imageOpaqueBindCount && !bindInfo.pImageOpaqueBinds) ||
+			(bindInfo.imageBindCount && !bindInfo.pImageBinds) ||
+			(bindInfo.signalSemaphoreCount && !bindInfo.pSignalSemaphores)) {
 			return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Bind info %u is not supported.", infoIdx);
 		}
 
@@ -263,6 +266,94 @@ VkResult MVKQueue::bindSparse(uint32_t bindInfoCount, const VkBindSparseInfo* pB
 						bind.memoryOffset % kMVKPrivateSparseBufferPageSize ||
 						bind.memoryOffset > UINT64_MAX - bind.size ||
 						bind.memoryOffset + bind.size > memory->getDeviceMemoryCommitment()) {
+						return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse memory bind range is invalid.");
+					}
+				}
+			}
+		}
+
+		for (uint32_t opaqueIdx = 0; opaqueIdx < bindInfo.imageOpaqueBindCount; opaqueIdx++) {
+			const VkSparseImageOpaqueMemoryBindInfo& opaqueInfo = bindInfo.pImageOpaqueBinds[opaqueIdx];
+			auto* image = (MVKImage*)opaqueInfo.image;
+			if (!image || image->getDevice() != _device || !image->isPrivateSparseImage() ||
+				(opaqueInfo.bindCount && !opaqueInfo.pBinds)) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Image opaque bind %u in info %u is not supported.", opaqueIdx, infoIdx);
+			}
+			// Metal maps the mip tail of one texture slice all at once, so an opaque
+			// bind must cover the whole mip tail of exactly one array layer.
+			VkDeviceSize tailSize = image->getMipTailSize();
+			for (uint32_t bindIdx = 0; bindIdx < opaqueInfo.bindCount; bindIdx++) {
+				const VkSparseMemoryBind& bind = opaqueInfo.pBinds[bindIdx];
+				if (bind.flags ||
+					!tailSize ||
+					bind.size != tailSize ||
+					bind.resourceOffset % tailSize ||
+					bind.resourceOffset / tailSize >= image->getLayerCount()) {
+					return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Image opaque bind range must cover the full mip tail of one array layer.");
+				}
+				if (bind.memory) {
+					auto* memory = (MVKDeviceMemory*)bind.memory;
+					if (memory->getDevice() != _device ||
+						!memory->isPlacementSparseCompatible() ||
+						!memory->getMTLPlacementSparseHeap() ||
+						bind.memoryOffset % image->getSparseTileByteCount() ||
+						bind.memoryOffset > UINT64_MAX - bind.size ||
+						bind.memoryOffset + bind.size > memory->getDeviceMemoryCommitment()) {
+						return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse memory bind range is invalid.");
+					}
+				}
+			}
+		}
+
+		for (uint32_t imageIdx = 0; imageIdx < bindInfo.imageBindCount; imageIdx++) {
+			const VkSparseImageMemoryBindInfo& imageInfo = bindInfo.pImageBinds[imageIdx];
+			auto* image = (MVKImage*)imageInfo.image;
+			if (!image || image->getDevice() != _device || !image->isPrivateSparseImage() ||
+				(imageInfo.bindCount && !imageInfo.pBinds)) {
+				return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Image bind %u in info %u is not supported.", imageIdx, infoIdx);
+			}
+			// Metal maps whole sparse tiles, so bind offsets must align to the sparse
+			// block granularity, and extents must be granularity-aligned except when
+			// they reach the edge of the mip level (partial edge blocks).
+			VkExtent3D granularity = image->getSparseTileExtent();
+			for (uint32_t bindIdx = 0; bindIdx < imageInfo.bindCount; bindIdx++) {
+				const VkSparseImageMemoryBind& bind = imageInfo.pBinds[bindIdx];
+				if (bind.flags ||
+					bind.subresource.aspectMask != image->getSparseAspectMask() ||
+					bind.subresource.mipLevel >= image->getMipTailFirstLod() ||
+					bind.subresource.arrayLayer >= image->getLayerCount()) {
+					return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Image bind subresource is invalid. Mip tails must be bound with opaque binds.");
+				}
+				VkExtent3D mipExtent = image->getExtent3D(0, bind.subresource.mipLevel);
+				if (!bind.extent.width || !bind.extent.height || !bind.extent.depth ||
+					bind.extent.width > mipExtent.width ||
+					bind.extent.height > mipExtent.height ||
+					bind.extent.depth > mipExtent.depth ||
+					bind.offset.x % granularity.width ||
+					bind.offset.y % granularity.height ||
+					bind.offset.z % granularity.depth ||
+					bind.offset.x > mipExtent.width - bind.extent.width ||
+					bind.offset.y > mipExtent.height - bind.extent.height ||
+					bind.offset.z > mipExtent.depth - bind.extent.depth ||
+					((bind.extent.width % granularity.width) && bind.offset.x + bind.extent.width != mipExtent.width) ||
+					((bind.extent.height % granularity.height) && bind.offset.y + bind.extent.height != mipExtent.height) ||
+					((bind.extent.depth % granularity.depth) && bind.offset.z + bind.extent.depth != mipExtent.depth)) {
+					return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Image bind region is not aligned to the sparse block granularity.");
+				}
+				// Partial edge blocks still occupy a full sparse block in memory.
+				VkDeviceSize tileByteCount = image->getSparseTileByteCount();
+				uint64_t tilesX = (bind.offset.x + bind.extent.width + granularity.width - 1) / granularity.width - bind.offset.x / granularity.width;
+				uint64_t tilesY = (bind.offset.y + bind.extent.height + granularity.height - 1) / granularity.height - bind.offset.y / granularity.height;
+				uint64_t tilesZ = (bind.offset.z + bind.extent.depth + granularity.depth - 1) / granularity.depth - bind.offset.z / granularity.depth;
+				uint64_t regionByteCount = tilesX * tilesY * tilesZ * tileByteCount;
+				if (bind.memory) {
+					auto* memory = (MVKDeviceMemory*)bind.memory;
+					if (memory->getDevice() != _device ||
+						!memory->isPlacementSparseCompatible() ||
+						!memory->getMTLPlacementSparseHeap() ||
+						bind.memoryOffset % tileByteCount ||
+						bind.memoryOffset > UINT64_MAX - regionByteCount ||
+						bind.memoryOffset + regionByteCount > memory->getDeviceMemoryCommitment()) {
 						return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkQueueBindSparse(): Sparse memory bind range is invalid.");
 					}
 				}
@@ -928,6 +1019,19 @@ VkResult MVKQueueSparseSubmission::execute() {
 											   operations:&operation
 													count:1];
 		}
+		for (const auto& bind : _imageBinds) {
+			MTL4UpdateSparseTextureMappingOperation operation = {
+				.mode = bind.isMap ? MTLSparseTextureMappingModeMap : MTLSparseTextureMappingModeUnmap,
+				.textureRegion = bind.tileRegion,
+				.textureLevel = bind.textureLevel,
+				.textureSlice = bind.textureSlice,
+				.heapOffset = bind.heapOffset,
+			};
+			[_queue->_mtl4SparseQueue updateTextureMappings:bind.mtlTexture
+													  heap:bind.mtlHeap
+												operations:&operation
+													 count:1];
+		}
 
 		[_mtl4BarrierBuffer beginCommandBufferWithAllocator:_mtl4Allocator];
 		id<MTL4ComputeCommandEncoder> barrier = [_mtl4BarrierBuffer computeCommandEncoder];
@@ -1020,6 +1124,64 @@ MVKQueueSparseSubmission::MVKQueueSparseSubmission(MVKQueue* queue,
 			}
 		}
 
+		for (uint32_t opaqueIdx = 0; opaqueIdx < pBindInfo->imageOpaqueBindCount; opaqueIdx++) {
+			const VkSparseImageOpaqueMemoryBindInfo& opaqueInfo = pBindInfo->pImageOpaqueBinds[opaqueIdx];
+			auto* image = (MVKImage*)opaqueInfo.image;
+			VkDeviceSize tileByteCount = image->getSparseTileByteCount();
+			for (uint32_t bindIdx = 0; bindIdx < opaqueInfo.bindCount; bindIdx++) {
+				const VkSparseMemoryBind& bind = opaqueInfo.pBinds[bindIdx];
+				auto* memory = (MVKDeviceMemory*)bind.memory;
+				// Validation guaranteed the bind covers the whole mip tail of one layer.
+				// Metal maps a slice tail as a linear run of tiles at the tail mip level.
+				MVKSparseImageBind ownedBind = {
+					.image = image,
+					.memory = memory,
+					.mtlTexture = [image->getMTLTexture(0) retain],
+					.mtlHeap = memory ? [memory->getMTLPlacementSparseHeap() retain] : nil,
+					.tileRegion = MTLRegionMake3D(0, 0, 0, (NSUInteger)(bind.size / tileByteCount), 1, 1),
+					.textureLevel = (NSUInteger)image->getMipTailFirstLod(),
+					.textureSlice = (NSUInteger)(bind.resourceOffset / bind.size),
+					.heapOffset = (NSUInteger)(memory ? bind.memoryOffset / tileByteCount : 0),
+					.isMap = memory != nullptr,
+				};
+				image->retain();
+				if (memory) { memory->retain(); }
+				_imageBinds.push_back(ownedBind);
+			}
+		}
+
+		for (uint32_t imageIdx = 0; imageIdx < pBindInfo->imageBindCount; imageIdx++) {
+			const VkSparseImageMemoryBindInfo& imageInfo = pBindInfo->pImageBinds[imageIdx];
+			auto* image = (MVKImage*)imageInfo.image;
+			VkExtent3D granularity = image->getSparseTileExtent();
+			VkDeviceSize tileByteCount = image->getSparseTileByteCount();
+			for (uint32_t bindIdx = 0; bindIdx < imageInfo.bindCount; bindIdx++) {
+				const VkSparseImageMemoryBind& bind = imageInfo.pBinds[bindIdx];
+				auto* memory = (MVKDeviceMemory*)bind.memory;
+				NSUInteger tileX = bind.offset.x / granularity.width;
+				NSUInteger tileY = bind.offset.y / granularity.height;
+				NSUInteger tileZ = bind.offset.z / granularity.depth;
+				// Validation guaranteed aligned offsets and mip-edge-clamped extents.
+				MVKSparseImageBind ownedBind = {
+					.image = image,
+					.memory = memory,
+					.mtlTexture = [image->getMTLTexture(0) retain],
+					.mtlHeap = memory ? [memory->getMTLPlacementSparseHeap() retain] : nil,
+					.tileRegion = MTLRegionMake3D(tileX, tileY, tileZ,
+												 (bind.offset.x + bind.extent.width + granularity.width - 1) / granularity.width - tileX,
+												 (bind.offset.y + bind.extent.height + granularity.height - 1) / granularity.height - tileY,
+												 (bind.offset.z + bind.extent.depth + granularity.depth - 1) / granularity.depth - tileZ),
+					.textureLevel = (NSUInteger)bind.subresource.mipLevel,
+					.textureSlice = (NSUInteger)bind.subresource.arrayLayer,
+					.heapOffset = (NSUInteger)(memory ? bind.memoryOffset / tileByteCount : 0),
+					.isMap = memory != nullptr,
+				};
+				image->retain();
+				if (memory) { memory->retain(); }
+				_imageBinds.push_back(ownedBind);
+			}
+		}
+
 		_mtl4Allocator = [getMTLDevice() newCommandAllocator];
 		_mtl4BarrierBuffer = [getMTLDevice() newCommandBuffer];
 		if (!_mtl4Allocator || !_mtl4BarrierBuffer) {
@@ -1035,6 +1197,12 @@ MVKQueueSparseSubmission::~MVKQueueSparseSubmission() {
 		[bind.mtlHeap release];
 		if (bind.memory) { bind.memory->release(); }
 		bind.buffer->release();
+	}
+	for (auto& bind : _imageBinds) {
+		[bind.mtlTexture release];
+		[bind.mtlHeap release];
+		if (bind.memory) { bind.memory->release(); }
+		bind.image->release();
 	}
 	[_mtl4BarrierBuffer release];
 	[_mtl4Allocator release];
