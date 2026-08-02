@@ -177,6 +177,13 @@ MTLTextureDescriptor* MVKImagePlane::newMTLTextureDescriptor() {
 	mtlTexDesc.usage = _image->getMTLTextureUsage(_mtlPixFmt);
     mtlTexDesc.storageMode = _image->getMTLStorageMode();
     mtlTexDesc.cpuCacheMode = _image->getMTLCPUCacheMode();
+#if MVK_XCODE_26 && MVK_MACOS
+	if (_image->_isPrivateSparseImage) {
+		if (@available(macOS 26.0, *)) {
+			mtlTexDesc.placementSparsePageSize = MTLSparsePageSize16;
+		}
+	}
+#endif
     // For 2D views of 3D and block texel views, we alias the underlying memory.
     // Ensure that it remains consistent by disabling GPU layout optimization.
     mtlTexDesc.allowGPUOptimizedContents = !_image->_is2DViewOn3DImageCompatible && !_image->_isBlockTexelViewCompatible;
@@ -495,6 +502,9 @@ VkResult MVKImageMemoryBinding::getMemoryRequirements(VkMemoryRequirements2* pMe
 
 // Memory may have been mapped before image was bound, and needs to be loaded into the MTLTexture.
 VkResult MVKImageMemoryBinding::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDeviceSize memOffset) {
+	if (_image->_isPrivateSparseImage) {
+		return reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkBindImageMemory(): Sparse images must be bound with vkQueueBindSparse().");
+	}
     if (_deviceMemory) { MVKDeviceMemory::removeImageMemoryBinding(&_deviceMemory, this); }
     MVKResource::bindDeviceMemory(mvkMem, memOffset);
 
@@ -940,6 +950,17 @@ VkResult MVKImage::getMemoryRequirements(VkMemoryRequirements* pMemoryRequiremen
 	MVKPhysicalDevice* mvkPD = getPhysicalDevice();
 	VkImageUsageFlags combinedUsage = getCombinedUsage();
 
+	if (_isPrivateSparseImage) {
+		// Sparse images commit memory page-by-page through vkQueueBindSparse().
+		// Only the mip tail region may need an opaque allocation, and the
+		// sparse block size is the required alignment.
+		pMemoryRequirements->size = _mipTailSize * _arrayLayers;
+		pMemoryRequirements->alignment = _sparseTileByteCount;
+		pMemoryRequirements->memoryTypeBits = mvkPD->getPrivateMemoryTypes() &
+											 ~mvkPD->getLazilyAllocatedMemoryTypes();
+		return VK_SUCCESS;
+	}
+
     pMemoryRequirements->memoryTypeBits = (_isDepthStencilAttachment)
                                           ? mvkPD->getPrivateMemoryTypes()
                                           : mvkPD->getAllMemoryTypes();
@@ -989,6 +1010,48 @@ VkResult MVKImage::getMemoryRequirements(VkMemoryRequirements2 *pMemoryRequireme
 
 VkResult MVKImage::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDeviceSize memOffset, uint8_t planeIndex) {
     return getMemoryBinding(planeIndex)->bindDeviceMemory(mvkMem, memOffset);
+}
+
+void MVKImage::getSparseMemoryRequirements(uint32_t* pCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements) {
+	uint32_t reqCnt = _isPrivateSparseImage ? 1 : 0;
+
+	// If requirements aren't actually being requested yet, simply update the returned count
+	if ( !pSparseMemoryRequirements ) {
+		*pCount = reqCnt;
+		return;
+	}
+
+	uint32_t cnt = min(*pCount, reqCnt);
+	*pCount = cnt;
+	for (uint32_t reqIdx = 0; reqIdx < cnt; reqIdx++) {
+		auto& reqs = pSparseMemoryRequirements[reqIdx];
+		reqs.formatProperties.aspectMask = _sparseAspectMask;
+		reqs.formatProperties.imageGranularity = _sparseTileExtent;
+		// Metal sparse pages are 16 KB, so the block shapes never match the
+		// 64 KB standard sparse image block shapes. Metal begins the mip tail
+		// at the first mip level smaller than one sparse block in bytes, which
+		// matches the Vulkan base mip tail rule without ALIGNED_MIP_SIZE.
+		reqs.formatProperties.flags = VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT;
+		reqs.imageMipTailFirstLod = _mipTailFirstLod;
+		reqs.imageMipTailSize = _mipTailSize;
+		reqs.imageMipTailOffset = 0;
+		reqs.imageMipTailStride = _mipTailSize;
+	}
+}
+
+void MVKImage::getSparseMemoryRequirements(uint32_t* pCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements) {
+	if (pSparseMemoryRequirements) {
+		// Populate a temp array of VkSparseImageMemoryRequirements then copy into the
+		// array of VkSparseImageMemoryRequirements2.
+		VkSparseImageMemoryRequirements reqs[*pCount];
+		getSparseMemoryRequirements(pCount, reqs);
+		for (uint32_t reqIdx = 0; reqIdx < *pCount; reqIdx++) {
+			pSparseMemoryRequirements[reqIdx].sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2;
+			pSparseMemoryRequirements[reqIdx].memoryRequirements = reqs[reqIdx];
+		}
+	} else {
+		getSparseMemoryRequirements(pCount, (VkSparseImageMemoryRequirements*)nullptr);
+	}
 }
 
 VkResult MVKImage::bindDeviceMemory2(const VkBindImageMemoryInfo* pBindInfo) {
@@ -1261,6 +1324,12 @@ MVKImage::MVKImage(MVKDevice* device, const VkImageCreateInfo* pCreateInfo) : MV
     uint8_t memoryBindingCount = (pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT) ? planeCount : 1;
     _hasChromaSubsampling = (subsamplingPlaneCount > 0);
 
+	VkImageCreateFlags sparseFlags = pCreateInfo->flags &
+		(VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+		 VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+		 VK_IMAGE_CREATE_SPARSE_ALIASED_BIT);
+	if (sparseFlags) { initSparseImage(pCreateInfo, sparseFlags, memoryBindingCount, pExtMemInfo != nullptr); }
+
     for (uint8_t planeIndex = 0; planeIndex < memoryBindingCount; ++planeIndex) {
         _memoryBindings.push_back(new MVKImageMemoryBinding(device, this, planeIndex));
     }
@@ -1276,7 +1345,12 @@ MVKImage::MVKImage(MVKDevice* device, const VkImageCreateInfo* pCreateInfo) : MV
         }
         _planes[planeIndex]->initSubresources(pCreateInfo);
         MVKImageMemoryBinding* memoryBinding = _planes[planeIndex]->getMemoryBinding();
-        if (!_isLinear && !_isLinearForAtomics && mtlFeats.placementHeaps) {
+        if (_isPrivateSparseImage) {
+			// Sparse images commit memory page-by-page through vkQueueBindSparse().
+			// The only region that may need an opaque allocation is the mip tail,
+			// which is sized once the Metal texture exists (below).
+			memoryBinding->_byteAlignment = std::max(memoryBinding->_byteAlignment, _sparseTileByteCount);
+        } else if (!_isLinear && !_isLinearForAtomics && mtlFeats.placementHeaps) {
             MTLTextureDescriptor* mtlTexDesc = _planes[planeIndex]->newMTLTextureDescriptor();    // temp retain
             MTLSizeAndAlign sizeAndAlign = [getMTLDevice() heapTextureSizeAndAlignWithDescriptor: mtlTexDesc];
             [mtlTexDesc release];
@@ -1302,6 +1376,23 @@ MVKImage::MVKImage(MVKDevice* device, const VkImageCreateInfo* pCreateInfo) : MV
         }
     }
     _hasExpectedTexelSize = _hasChromaSubsampling || (pixFmts->getBytesPerBlock(_planes[0]->_mtlPixFmt) == pixFmts->getBytesPerBlock(_vkFormat));
+
+	if (_isPrivateSparseImage) {
+#if MVK_XCODE_26 && MVK_MACOS
+		if (@available(macOS 26.4, *)) {
+			// Create the Metal texture eagerly so that its mip tail geometry can be
+			// reported through vkGetImageSparseMemoryRequirements().
+			id<MTLTexture> mtlTex = _planes[0]->getMTLTexture();
+			if (!mtlTex || !mtlTex.isSparse) {
+				setConfigurationResult(reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkCreateImage(): Could not create a placement-sparse Metal texture."));
+			} else {
+				_mipTailFirstLod = std::min((uint32_t)mtlTex.firstMipmapInTail, _mipLevels);
+				_mipTailSize = _mipTailFirstLod < _mipLevels ? (VkDeviceSize)mtlTex.tailSizeInBytes : 0;
+				_memoryBindings[0]->_byteCount = _mipTailSize * _arrayLayers;
+			}
+		}
+#endif
+	}
 
 	if (pExtMemInfo) { initExternalMemory(pExtMemInfo->handleTypes); }
 
@@ -1337,6 +1428,72 @@ MVKImage::MVKImage(MVKDevice* device, const VkImageCreateInfo* pCreateInfo) : MV
 
 	_is2DViewOn3DImageCompatible = mvkIsAnyFlagEnabled(pCreateInfo->flags, VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT);
 	_isBlockTexelViewCompatible = mvkIsAnyFlagEnabled(pCreateInfo->flags, VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+}
+
+// Mage: configure a placement-sparse image. The Metal texture is created with a
+// placement sparse page size, and its pages are mapped to placement sparse heaps
+// through vkQueueBindSparse(). Restricted to single-plane, optimally tiled images
+// without external memory, because a Metal sparse texture cannot be split across
+// aspects, planes, or heaps.
+void MVKImage::initSparseImage(const VkImageCreateInfo* pCreateInfo,
+							   VkImageCreateFlags sparseFlags,
+							   uint8_t memoryBindingCount,
+							   bool hasExternalMemory) {
+#if MVK_XCODE_26 && MVK_MACOS
+	MVKPixelFormats* pixFmts = getPixelFormats();
+	MTLPixelFormat mtlPixFmt = pixFmts->getMTLPixelFormat(_vkFormat);
+
+	bool residencyFeatureEnabled;
+	if (getImageType() == VK_IMAGE_TYPE_3D) {
+		residencyFeatureEnabled = getEnabledFeatures().sparseResidencyImage3D;
+	} else {
+		switch (_samples) {
+			case VK_SAMPLE_COUNT_2_BIT: residencyFeatureEnabled = getEnabledFeatures().sparseResidency2Samples; break;
+			case VK_SAMPLE_COUNT_4_BIT: residencyFeatureEnabled = getEnabledFeatures().sparseResidency4Samples; break;
+			case VK_SAMPLE_COUNT_8_BIT: residencyFeatureEnabled = getEnabledFeatures().sparseResidency8Samples; break;
+			case VK_SAMPLE_COUNT_16_BIT: residencyFeatureEnabled = getEnabledFeatures().sparseResidency16Samples; break;
+			default: residencyFeatureEnabled = getEnabledFeatures().sparseResidencyImage2D; break;
+		}
+	}
+
+	VkImageCreateFlags requiredSparseFlags =
+		VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+	bool supported = sparseFlags == requiredSparseFlags &&
+		_device->isPrivateSparseBufferEnabled() &&
+		residencyFeatureEnabled &&
+		!_isLinear &&
+		!_hasChromaSubsampling &&
+		memoryBindingCount == 1 &&
+		!hasExternalMemory &&
+		!(pixFmts->isDepthFormat(mtlPixFmt) && pixFmts->isStencilFormat(mtlPixFmt));
+	if (!supported) {
+		setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateImage(): This sparse image configuration is not supported."));
+		return;
+	}
+
+	if (@available(macOS 26.4, *)) {
+		if (!getMTLDevice().supportsPlacementSparse) {
+			setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateImage(): Placement-sparse Metal textures are not available."));
+			return;
+		}
+		MTLSize tileSize = [getMTLDevice() sparseTileSizeWithTextureType:_mtlTextureType
+															pixelFormat:mtlPixFmt
+															sampleCount:mvkSampleCountFromVkSampleCountFlagBits(_samples)
+														 sparsePageSize:MTLSparsePageSize16];
+		if (!tileSize.width || !tileSize.height || !tileSize.depth) {
+			setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateImage(): This sparse image format is not supported."));
+			return;
+		}
+		_sparseTileExtent = { uint32_t(tileSize.width), uint32_t(tileSize.height), uint32_t(tileSize.depth) };
+		_sparseTileByteCount = (VkDeviceSize)[getMTLDevice() sparseTileSizeInBytesForSparsePageSize:MTLSparsePageSize16];
+		_sparseAspectMask = pixFmts->isDepthFormat(mtlPixFmt)
+			? VK_IMAGE_ASPECT_DEPTH_BIT
+			: pixFmts->isStencilFormat(mtlPixFmt) ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		_isPrivateSparseImage = true;
+		return;
+	}
+#endif
+	setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateImage(): Placement-sparse Metal textures are not available."));
 }
 
 VkSampleCountFlagBits MVKImage::validateSamples(const VkImageCreateInfo* pCreateInfo, bool isAttachment) {

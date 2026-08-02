@@ -625,12 +625,8 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkGetImageSparseMemoryRequirements(
     VkSparseImageMemoryRequirements*            pSparseMemoryRequirements) {
 
 	MVKTraceVulkanCallStart();
-
-	// Metal does not support sparse images.
-	// Vulkan spec: "If the image was not created with VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT then
-	// pSparseMemoryRequirementCount will be set to zero and pSparseMemoryRequirements will not be written to.".
-
-	*pNumRequirements = 0;
+	MVKImage* mvkImg = (MVKImage*)image;
+	mvkImg->getSparseMemoryRequirements(pNumRequirements, pSparseMemoryRequirements);
 	MVKTraceVulkanCallEnd();
 }
 
@@ -645,12 +641,8 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkGetPhysicalDeviceSparseImageFormatProperties(
 	VkSparseImageFormatProperties*              pProperties) {
 
 	MVKTraceVulkanCallStart();
-
-	// Metal does not support sparse images.
-	// Vulkan spec: "If VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT is not supported for the given arguments,
-	// pPropertyCount will be set to zero upon return, and no data will be written to pProperties.".
-
-	*pPropertyCount = 0;
+	MVKPhysicalDevice* mvkPD = MVKPhysicalDevice::getMVKPhysicalDevice(physicalDevice);
+	mvkPD->getSparseImageFormatProperties(format, type, samples, usage, tiling, pPropertyCount, pProperties);
 	MVKTraceVulkanCallEnd();
 }
 
@@ -2228,12 +2220,8 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkGetPhysicalDeviceSparseImageFormatProperties2(
     VkSparseImageFormatProperties2*               pProperties) {
 
 	MVKTraceVulkanCallStart();
-
-	// Metal does not support sparse images.
-	// Vulkan spec: "If VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT is not supported for the given arguments,
-	// pPropertyCount will be set to zero upon return, and no data will be written to pProperties.".
-
-    *pPropertyCount = 0;
+	MVKPhysicalDevice* mvkPD = MVKPhysicalDevice::getMVKPhysicalDevice(physicalDevice);
+	mvkPD->getSparseImageFormatProperties(pFormatInfo, pPropertyCount, pProperties);
 	MVKTraceVulkanCallEnd();
 }
 
@@ -2342,12 +2330,8 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkGetImageSparseMemoryRequirements2(
     VkSparseImageMemoryRequirements2*               pSparseMemoryRequirements) {
 
 	MVKTraceVulkanCallStart();
-
-	// Metal does not support sparse images.
-	// Vulkan spec: "If the image was not created with VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT then
-	// pSparseMemoryRequirementCount will be set to zero and pSparseMemoryRequirements will not be written to.".
-
-    *pSparseMemoryRequirementCount = 0;
+	auto* mvkImg = (MVKImage*)pInfo->image;
+	mvkImg->getSparseMemoryRequirements(pSparseMemoryRequirementCount, pSparseMemoryRequirements);
 	MVKTraceVulkanCallEnd();
 }
 

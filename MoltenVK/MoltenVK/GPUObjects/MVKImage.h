@@ -237,6 +237,32 @@ public:
 
     MTLTextureDescriptor* newMTLTextureDescriptor(uint32_t planeIndex);
 
+#pragma mark Sparse memory
+
+	/** Returns whether this image is a placement-sparse image whose pages are bound with vkQueueBindSparse(). */
+	bool isPrivateSparseImage() const { return _isPrivateSparseImage; }
+
+	/** Returns the single aspect mask usable in sparse binds of this image. */
+	VkImageAspectFlags getSparseAspectMask() const { return _sparseAspectMask; }
+
+	/** Returns the sparse block granularity of this image, in texels. */
+	VkExtent3D getSparseTileExtent() const { return _sparseTileExtent; }
+
+	/** Returns the size of one sparse image block of this image, in bytes. */
+	VkDeviceSize getSparseTileByteCount() const { return _sparseTileByteCount; }
+
+	/** Returns the first mip level in the mip tail. Mip levels at and beyond this one are bound via opaque binds. */
+	uint32_t getMipTailFirstLod() const { return _mipTailFirstLod; }
+
+	/** Returns the size of the mip tail of one array layer, in bytes, or zero if this image has no mip tail. */
+	VkDeviceSize getMipTailSize() const { return _mipTailSize; }
+
+	/** Populates the sparse memory requirements of this image. */
+	void getSparseMemoryRequirements(uint32_t* pCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements);
+
+	/** Populates the sparse memory requirements of this image. */
+	void getSparseMemoryRequirements(uint32_t* pCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements);
+
 #pragma mark Resource memory
 
 	/** Returns the memory requirements of this resource by populating the specified structure. */
@@ -361,6 +387,7 @@ protected:
 	VkSampleCountFlagBits validateSamples(const VkImageCreateInfo* pCreateInfo, bool isAttachment);
 	uint32_t validateMipLevels(const VkImageCreateInfo* pCreateInfo, bool isAttachment);
 	bool validateLinear(const VkImageCreateInfo* pCreateInfo, bool isAttachment);
+	void initSparseImage(const VkImageCreateInfo* pCreateInfo, VkImageCreateFlags sparseFlags, uint8_t memoryBindingCount, bool hasExternalMemory);
 	void initExternalMemory(VkExternalMemoryHandleTypeFlags handleTypes);
     void releaseIOSurface();
 	bool getIsValidViewFormat(VkFormat viewFormat);
@@ -402,6 +429,12 @@ protected:
 	bool _isLinearForAtomics;
 	bool _is2DViewOn3DImageCompatible = false;
 	bool _isBlockTexelViewCompatible = false;
+	VkExtent3D _sparseTileExtent = { 0, 0, 0 };
+	VkDeviceSize _sparseTileByteCount = 0;
+	VkDeviceSize _mipTailSize = 0;
+	uint32_t _mipTailFirstLod = 0;
+	VkImageAspectFlags _sparseAspectMask = 0;
+	bool _isPrivateSparseImage = false;
 };
 
 

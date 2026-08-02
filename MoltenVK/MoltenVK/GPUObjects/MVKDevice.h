@@ -244,6 +244,20 @@ public:
     VkResult getImageFormatProperties(const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo,
                                       VkImageFormatProperties2* pImageFormatProperties);
 
+	/** Populates the sparse image format properties supported on this device. */
+	void getSparseImageFormatProperties(VkFormat format,
+										VkImageType type,
+										VkSampleCountFlagBits samples,
+										VkImageUsageFlags usage,
+										VkImageTiling tiling,
+										uint32_t* pPropertyCount,
+										VkSparseImageFormatProperties* pProperties);
+
+	/** Populates the sparse image format properties supported on this device. */
+	void getSparseImageFormatProperties(const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo,
+										uint32_t* pPropertyCount,
+										VkSparseImageFormatProperties2* pProperties);
+
 	/** Populates the external buffer properties supported on this device. */
 	void getExternalBufferProperties(const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo,
 									 VkExternalBufferProperties* pExternalBufferProperties);

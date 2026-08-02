@@ -1827,6 +1827,85 @@ VkResult MVKPhysicalDevice::getImageFormatProperties(const VkPhysicalDeviceImage
 									&pImageFormatProperties->imageFormatProperties);
 }
 
+// Mage: report sparse image format properties for placement-sparse images.
+// The granularity is the Metal sparse tile size for the format, which never
+// matches the 64 KB standard sparse image block shapes because Metal sparse
+// pages are 16 KB. Metal begins the mip tail at the first mip level smaller
+// than one sparse block in bytes, matching the Vulkan base mip tail rule,
+// so ALIGNED_MIP_SIZE is never set.
+void MVKPhysicalDevice::getSparseImageFormatProperties(VkFormat format,
+													   VkImageType type,
+													   VkSampleCountFlagBits samples,
+													   VkImageUsageFlags usage,
+													   VkImageTiling tiling,
+													   uint32_t* pPropertyCount,
+													   VkSparseImageFormatProperties* pProperties) {
+	uint32_t propCnt = 0;
+	VkSparseImageFormatProperties props = {};
+#if MVK_XCODE_26 && MVK_MACOS
+	bool supported = mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") != 0.0 &&
+		mvkGetEnvVarNumber("MAGE_MVK_NO_SPARSE_IMAGE") == 0.0 &&
+		tiling == VK_IMAGE_TILING_OPTIMAL &&
+		(type != VK_IMAGE_TYPE_3D || samples == VK_SAMPLE_COUNT_1_BIT) &&
+		_metalFeatures.placementHeaps &&
+		_pixelFormats.isSupported(format) &&
+		_pixelFormats.getChromaSubsamplingPlaneCount(format) == 0;
+	MTLPixelFormat mtlPixFmt = _pixelFormats.getMTLPixelFormat(format);
+	supported = supported &&
+		mtlPixFmt != MTLPixelFormatInvalid &&
+		!(_pixelFormats.isDepthFormat(mtlPixFmt) && _pixelFormats.isStencilFormat(mtlPixFmt));
+	if (supported) {
+		if (@available(macOS 26.4, *)) {
+			if (_mtlDevice.supportsPlacementSparse) {
+				MTLTextureType mtlTexType = mvkMTLTextureTypeFromVkImageType(type, 1, samples > VK_SAMPLE_COUNT_1_BIT);
+				MTLSize tileSize = [_mtlDevice sparseTileSizeWithTextureType:mtlTexType
+																pixelFormat:mtlPixFmt
+																sampleCount:mvkSampleCountFromVkSampleCountFlagBits(samples)
+															 sparsePageSize:MTLSparsePageSize16];
+				if (tileSize.width && tileSize.height && tileSize.depth) {
+					props.aspectMask = _pixelFormats.isDepthFormat(mtlPixFmt)
+						? VK_IMAGE_ASPECT_DEPTH_BIT
+						: _pixelFormats.isStencilFormat(mtlPixFmt) ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+					props.imageGranularity = { uint32_t(tileSize.width), uint32_t(tileSize.height), uint32_t(tileSize.depth) };
+					props.flags = VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT;
+					propCnt = 1;
+				}
+			}
+		}
+	}
+#endif
+
+	// If properties aren't actually being requested yet, simply update the returned count
+	if ( !pProperties ) {
+		*pPropertyCount = propCnt;
+		return;
+	}
+
+	uint32_t cnt = min(*pPropertyCount, propCnt);
+	*pPropertyCount = cnt;
+	if (cnt) { pProperties[0] = props; }
+}
+
+void MVKPhysicalDevice::getSparseImageFormatProperties(const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo,
+													   uint32_t* pPropertyCount,
+													   VkSparseImageFormatProperties2* pProperties) {
+	if (pProperties) {
+		// Populate a temp array of VkSparseImageFormatProperties then copy into the
+		// array of VkSparseImageFormatProperties2.
+		VkSparseImageFormatProperties props[*pPropertyCount];
+		getSparseImageFormatProperties(pFormatInfo->format, pFormatInfo->type, pFormatInfo->samples,
+									   pFormatInfo->usage, pFormatInfo->tiling, pPropertyCount, props);
+		for (uint32_t propIdx = 0; propIdx < *pPropertyCount; propIdx++) {
+			pProperties[propIdx].sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_FORMAT_PROPERTIES_2;
+			pProperties[propIdx].properties = props[propIdx];
+		}
+	} else {
+		getSparseImageFormatProperties(pFormatInfo->format, pFormatInfo->type, pFormatInfo->samples,
+									   pFormatInfo->usage, pFormatInfo->tiling, pPropertyCount,
+									   (VkSparseImageFormatProperties*)nullptr);
+	}
+}
+
 void MVKPhysicalDevice::getExternalBufferProperties(const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo,
 													VkExternalBufferProperties* pExternalBufferProperties) {
 	pExternalBufferProperties->externalMemoryProperties = getExternalBufferProperties(pExternalBufferInfo->handleType);
@@ -2470,12 +2549,28 @@ void MVKPhysicalDevice::initMageSparseFeatures() {
 	if (mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") == 0.0) { return; }
 	_features.sparseBinding = VK_TRUE;
 	_features.sparseResidencyBuffer = VK_TRUE;
+	_features.sparseResidencyAliased = VK_TRUE;
+	// Metal placement-sparse pages are 16 KB, so no standard 64 KB sparse image
+	// block shape is ever used. Metal starts the mip tail at the first mip level
+	// smaller than one sparse block in bytes, which is the Vulkan base mip tail
+	// rule, so ALIGNED_MIP_SIZE semantics are not used either.
+	_properties.sparseProperties.residencyStandard2DBlockShape = VK_FALSE;
+	_properties.sparseProperties.residencyStandard2DMultisampleBlockShape = VK_FALSE;
+	_properties.sparseProperties.residencyStandard3DBlockShape = VK_FALSE;
+	_properties.sparseProperties.residencyAlignedMipSize = VK_FALSE;
+	_properties.sparseProperties.residencyNonResidentStrict = VK_TRUE;
 	// Image residency bits: id Tech 8 enables its virtual-texturing path when
-	// these are set, but MoltenVK has no sparse image support (format queries
-	// return 0, image binds hard-fail), which leaves VT pages never streamed
-	// (grey geometry / black blobs). MAGE_MVK_NO_SPARSE_IMAGE=1 hides them to
-	// A/B whether the engine falls back to non-VT texturing.
-	if (mvkGetEnvVarNumber("MAGE_MVK_NO_SPARSE_IMAGE") == 0.0) {
+	// these are set. Only advertise them when placement-sparse textures are
+	// actually available (macOS 26.4+ and hardware support), because the
+	// runtime sparse image path requires them. MAGE_MVK_NO_SPARSE_IMAGE=1
+	// hides them to A/B whether the engine falls back to non-VT texturing.
+	bool sparseImagesAvailable = false;
+#if MVK_XCODE_26 && MVK_MACOS
+	if (@available(macOS 26.4, *)) {
+		sparseImagesAvailable = _metalFeatures.placementHeaps && _mtlDevice.supportsPlacementSparse;
+	}
+#endif
+	if (sparseImagesAvailable && mvkGetEnvVarNumber("MAGE_MVK_NO_SPARSE_IMAGE") == 0.0) {
 		_features.sparseResidencyImage2D = VK_TRUE;
 		_features.sparseResidencyImage3D = VK_TRUE;
 		_features.sparseResidency2Samples = VK_TRUE;
@@ -2483,12 +2578,6 @@ void MVKPhysicalDevice::initMageSparseFeatures() {
 		_features.sparseResidency8Samples = VK_TRUE;
 		_features.sparseResidency16Samples = VK_TRUE;
 	}
-	_features.sparseResidencyAliased = VK_TRUE;
-	_properties.sparseProperties.residencyStandard2DBlockShape = VK_TRUE;
-	_properties.sparseProperties.residencyStandard2DMultisampleBlockShape = VK_TRUE;
-	_properties.sparseProperties.residencyStandard3DBlockShape = VK_TRUE;
-	_properties.sparseProperties.residencyAlignedMipSize = VK_TRUE;
-	_properties.sparseProperties.residencyNonResidentStrict = VK_TRUE;
 }
 
 static MVKPhysicalDeviceArgumentBufferSizes::Entry getArgumentBufferSize(id<MTLDevice> dev, MTLDataType type) {
