@@ -504,6 +504,10 @@ void MVKSwapchain::initCAMetalLayer(const VkSwapchainCreateInfoKHR* pCreateInfo,
 	mtlLayer.pixelFormat = getPixelFormats()->getMTLPixelFormat(pCreateInfo->imageFormat);
 	mtlLayer.maximumDrawableCount = imgCnt;
 	mtlLayer.displaySyncEnabledMVK = (pCreateInfo->presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
+	// Present drawables immediately instead of deferring to the next CA
+	// transaction commit. Deferred presents let the compositor re-composite
+	// stale drawables, visible as flicker bands over new content.
+	mtlLayer.presentsWithTransaction = NO;
 	mtlLayer.minificationFilter = minMagFilter;
 	mtlLayer.magnificationFilter = minMagFilter;
 	mtlLayer.contentsGravity = getCALayerContentsGravity(pScalingInfo);
@@ -572,7 +576,6 @@ void MVKSwapchain::initCAMetalLayer(const VkSwapchainCreateInfoKHR* pCreateInfo,
 	}
 
 	// TODO: set additional CAMetalLayer properties before extracting drawables:
-	//	- presentsWithTransaction
 	//	- drawsAsynchronously
 }
 

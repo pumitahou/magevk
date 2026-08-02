@@ -1810,8 +1810,13 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 
 		// Try to do any present mode transitions as late as possible in an attempt
 		// to avoid visual disruptions on any presents already on the queue.
+		// Only write the property on an actual transition: writing displaySyncEnabled
+		// every present, mid-scanout, produces stale full-width band flicker.
 		if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
-			mtlDrwbl.layer.displaySyncEnabledMVK = (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
+			BOOL syncEnabled = (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
+			if (mtlDrwbl.layer.displaySyncEnabledMVK != syncEnabled) {
+				mtlDrwbl.layer.displaySyncEnabledMVK = syncEnabled;
+			}
 		}
 		if (presentInfo.desiredPresentTime) {
 			[mtlDrwbl presentAtTime: (double)presentInfo.desiredPresentTime * 1.0e-9];
