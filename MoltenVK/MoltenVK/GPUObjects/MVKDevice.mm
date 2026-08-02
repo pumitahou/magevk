@@ -2392,6 +2392,13 @@ VkResult MVKPhysicalDevice::getMemoryProperties(VkPhysicalDeviceMemoryProperties
 					budgetProps->heapUsage[1] = (VkDeviceSize)mvkGetUsedMemorySize();
 				}
 				budgetProps->heapBudget[0] = (VkDeviceSize)getRecommendedMaxWorkingSetSize();
+				// Mage: keep the budget consistent with the capped heap (see
+				// MAGE_VK_HEAP_SIZE_MB in initMemoryProperties()).
+				static const uint64_t mageHeapCapMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
+				if (mageHeapCapMB) {
+					VkDeviceSize capBytes = (VkDeviceSize)mageHeapCapMB * MEBI;
+					if (capBytes < budgetProps->heapBudget[0]) { budgetProps->heapBudget[0] = capBytes; }
+				}
 				auto currentAllocatedSize = (VkDeviceSize)getCurrentAllocatedSize();
 				if (budgetProps->heapUsage[1] > currentAllocatedSize) {
 					// mapped memory can't be larger than total memory, so ignore and zero-out
@@ -3473,7 +3480,17 @@ void MVKPhysicalDevice::initMemoryProperties() {
 
 	// Main heap
 	uint32_t mainHeapIdx = 0;
-	setMemoryHeap(mainHeapIdx, getVRAMSize(), VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+	// Mage: on unified memory the raw heap size is the full system RAM, which
+	// leads games to budget nearly all of physical memory and starve macOS.
+	// MAGE_VK_HEAP_SIZE_MB caps the advertised device-local heap (and the
+	// memory-budget extension below) to a game-tunable value.
+	static const uint64_t mageHeapCapMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
+	VkDeviceSize mainHeapSize = getVRAMSize();
+	if (mageHeapCapMB) {
+		VkDeviceSize capBytes = (VkDeviceSize)mageHeapCapMB * MEBI;
+		if (capBytes < mainHeapSize) { mainHeapSize = capBytes; }
+	}
+	setMemoryHeap(mainHeapIdx, mainHeapSize, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
 
 	// Optional second heap for shared memory
 	uint32_t sharedHeapIdx;
