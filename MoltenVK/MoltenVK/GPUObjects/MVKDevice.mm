@@ -2470,12 +2470,19 @@ void MVKPhysicalDevice::initMageSparseFeatures() {
 	if (mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") == 0.0) { return; }
 	_features.sparseBinding = VK_TRUE;
 	_features.sparseResidencyBuffer = VK_TRUE;
-	_features.sparseResidencyImage2D = VK_TRUE;
-	_features.sparseResidencyImage3D = VK_TRUE;
-	_features.sparseResidency2Samples = VK_TRUE;
-	_features.sparseResidency4Samples = VK_TRUE;
-	_features.sparseResidency8Samples = VK_TRUE;
-	_features.sparseResidency16Samples = VK_TRUE;
+	// Image residency bits: id Tech 8 enables its virtual-texturing path when
+	// these are set, but MoltenVK has no sparse image support (format queries
+	// return 0, image binds hard-fail), which leaves VT pages never streamed
+	// (grey geometry / black blobs). MAGE_MVK_NO_SPARSE_IMAGE=1 hides them to
+	// A/B whether the engine falls back to non-VT texturing.
+	if (mvkGetEnvVarNumber("MAGE_MVK_NO_SPARSE_IMAGE") == 0.0) {
+		_features.sparseResidencyImage2D = VK_TRUE;
+		_features.sparseResidencyImage3D = VK_TRUE;
+		_features.sparseResidency2Samples = VK_TRUE;
+		_features.sparseResidency4Samples = VK_TRUE;
+		_features.sparseResidency8Samples = VK_TRUE;
+		_features.sparseResidency16Samples = VK_TRUE;
+	}
 	_features.sparseResidencyAliased = VK_TRUE;
 	_properties.sparseProperties.residencyStandard2DBlockShape = VK_TRUE;
 	_properties.sparseProperties.residencyStandard2DMultisampleBlockShape = VK_TRUE;
