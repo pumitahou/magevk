@@ -3875,13 +3875,14 @@ void MVKPhysicalDevice::initExtensions() {
 		pWritableExtns->vk_KHR_draw_indirect_count.enabled = false;
 	}
 
-	// Mage: KHR_deferred_host_operations is a no-op here — join() returns
-	// VK_SUCCESS without executing anything and vkCreateRayTracingPipelinesKHR
-	// silently ignores the deferredOperation argument, so games that defer the
-	// heaviest (RT) compiles get a sync block with no warning. Stop advertising
-	// it until deferral is actually implemented; MAGE_MVK_DEFERRED_HOST_OPS=1
-	// restores the old behavior.
-	if (!mvkGetEnvVarNumber("MAGE_MVK_DEFERRED_HOST_OPS", 0)) {
+	// Mage: KHR_deferred_host_operations is a synchronous no-op here — join()
+	// returns VK_SUCCESS without executing anything — which is spec-legal
+	// (deferral is a hint; an implementation may complete immediately). The
+	// id Tech launcher hard-requires this extension in its GPU compatibility
+	// gate, so it must stay advertised: hiding it makes DOOM TDA report
+	// "Raytracing Incompatible GPU" and refuse to boot (2026-08-04).
+	// MAGE_MVK_DEFERRED_HOST_OPS=0 hides it again for diagnostics.
+	if (!mvkGetEnvVarNumber("MAGE_MVK_DEFERRED_HOST_OPS", 1)) {
 		pWritableExtns->vk_KHR_deferred_host_operations.enabled = false;
 	}
 
