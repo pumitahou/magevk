@@ -857,14 +857,19 @@ VkResult MVKAccelerationStructure::retainFullWriteGeneration(
 		/* Native storage is only carved from the game's buffer when it fits;
 		 * overflow generations are privately allocated, so a copy destination
 		 * created smaller than the source's native size (e.g. idTech's
-		 * compact-then-clone flow) may grow instead of failing. */
-		nativeCapacity = requiredNativeSize;
+		 * compact-then-clone flow) may grow instead of failing.
+		 * Mage: round overflow growth up by 1.5x so streaming rebuilds whose
+		 * size creeps by a few bytes per frame don't allocate a fresh
+		 * generation — a heavyweight Metal driver op plus residency commit on
+		 * the encode thread — every time (205ms encode-spike suspect, M1 #2). */
+		nativeCapacity = requiredNativeSize + requiredNativeSize / 2;
 	}
 	/* The instance-metadata buffer is a separate device-private allocation, so
 	 * it is not bounded by _size; grow its capacity instead of failing when a
-	 * compacted destination must hold a larger source's metadata. */
+	 * compacted destination must hold a larger source's metadata. Same
+	 * 1.5x bucketing as above. */
 	uint64_t metadataCapacity = _metadataCapacity;
-	if (requiredMetadataSize > metadataCapacity) { metadataCapacity = requiredMetadataSize; }
+	if (requiredMetadataSize > metadataCapacity) { metadataCapacity = requiredMetadataSize + requiredMetadataSize / 2; }
 	VkResult result = _storage->retainFullWriteGeneration(
 		nativeCapacity, requiredNativeSize, metadataCapacity, generation);
 	if (result >= 0 && generation) {

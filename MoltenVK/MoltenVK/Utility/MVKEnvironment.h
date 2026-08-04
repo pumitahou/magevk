@@ -71,7 +71,7 @@
 #ifdef __cplusplus
 
 /** The number of members of MVKConfiguration that are strings. */
-static constexpr uint32_t kMVKConfigurationStringCount = 2;
+static constexpr uint32_t kMVKConfigurationStringCount = 3;
 
 /** Global function to access MoltenVK configuration info. */
 const MVKConfiguration& getGlobalMVKConfig();
@@ -331,6 +331,17 @@ void mvkSetConfig(MVKConfiguration& dstMVKConfig, const MVKConfiguration& srcMVK
 /** If set, MVK will dump spirv input, translated msl, and pipelines into the given directory. */
 #ifndef MVK_CONFIG_SHADER_DUMP_DIR
 #   define MVK_CONFIG_SHADER_DUMP_DIR ""
+#endif
+
+/**
+ * If set to a directory path, MVK maintains an internal pipeline cache that is used whenever
+ * the app passes VK_NULL_HANDLE as the VkPipelineCache during pipeline creation, and persists
+ * that cache to a file in the given directory. This eliminates repeated SPIR-V to MSL
+ * translation across runs for apps that do not manage their own VkPipelineCache.
+ * Disabled (empty) by default.
+ */
+#ifndef MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR
+#   define MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR ""
 #endif
 
 /**

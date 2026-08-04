@@ -245,6 +245,7 @@ typedef struct {
 	float timestampPeriodLowPassAlpha;                                         /**< MVK_CONFIG_TIMESTAMP_PERIOD_LOWPASS_ALPHA */
 	VkBool32 useMetalPrivateAPI;                                               /**< MVK_CONFIG_USE_METAL_PRIVATE_API */
 	const char* shaderDumpDir;                                                 /**< MVK_CONFIG_SHADER_DUMP_DIR */
+	const char* autoPipelineCacheDir;                                          /**< MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR */
 	VkBool32 shaderLogEstimatedGLSL;                                           /**< MVK_CONFIG_SHADER_LOG_ESTIMATED_GLSL */
 	VkBool32 liveCheckAllResources;                                            /**< MVK_CONFIG_LIVE_CHECK_ALL_RESOURCES */
 	VkBool32 enableExperimentalRayTracing;                                     /**< MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING */

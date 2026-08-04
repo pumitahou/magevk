@@ -839,6 +839,25 @@ public:
     void destroyPipeline(MVKPipeline* mvkPPL,
                          const VkAllocationCallbacks* pAllocator);
 
+	/**
+	 * Returns a lazily-created internal pipeline cache used when the app passes VK_NULL_HANDLE
+	 * during pipeline creation. Persisted to disk when MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR is set.
+	 * Returns nullptr if that config is not set.
+	 */
+	MVKPipelineCache* getAutoPipelineCache();
+
+	/**
+	 * Returns a lazily-created Metal binary archive used to persist compiled GPU binaries
+	 * alongside the automatic pipeline cache. Only active when the MAGE_MVK_BINARY_ARCHIVE
+	 * env var is set and MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR names a directory to persist to.
+	 * Returns nil when inactive. Pipeline creation must never fail because of this archive.
+	 */
+	id<MTLBinaryArchive> getAutoBinaryArchive();
+
+	/** Adds the functions of a successfully compiled pipeline to the automatic binary archive. */
+	void addRenderPipelineFunctionsToAutoBinaryArchive(MTLRenderPipelineDescriptor* plDesc);
+	void addComputePipelineFunctionsToAutoBinaryArchive(MTLComputePipelineDescriptor* plDesc);
+
 	MVKSampler* createSampler(const VkSamplerCreateInfo* pCreateInfo,
 							  const VkAllocationCallbacks* pAllocator);
 	void destroySampler(MVKSampler* mvkSamp,
@@ -1168,6 +1187,11 @@ protected:
 	std::mutex _sem4Lock;
     std::mutex _perfLock;
 	std::mutex _vizLock;
+	std::mutex _autoPipelineCacheLock;
+	MVKPipelineCache* _autoPipelineCache = nullptr;
+	void saveAutoPipelineCache();
+	std::mutex _autoBinaryArchiveLock;
+	id<MTLBinaryArchive> _autoBinaryArchive = nil;
 	std::string _capturePipeFileName;
 	id<MTLSamplerState> _defaultMTLSamplerState = nil;
 	id<MTLBuffer> _dummyBlitMTLBuffer = nil;

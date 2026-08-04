@@ -1232,9 +1232,17 @@ bool MVKQueueFullCommandBufferSubmission<N>::requiresEncodingDependencyWait() {
 	for (auto& cbInfo : _cmdBuffers) {
 		hasDependentCommandBuffers |= cbInfo.commandBuffer->requiresEncodingDependencyWait();
 	}
+	// MageVK: MAGE_MVK_RT_DEP_WAIT_NARROW=1 also drops the sparse-buffer clause,
+	// which otherwise forces the CPU-blocking GPU drain on every submit when
+	// private sparse buffers are enabled. Experimental; A/B only.
+	static int rtDepWaitNarrow = -1;
+	if (rtDepWaitNarrow < 0) {
+		const char* rdwEnv = getenv("MAGE_MVK_RT_DEP_WAIT_NARROW");
+		rtDepWaitNarrow = (rdwEnv && !strcmp(rdwEnv, "1")) ? 1 : 0;
+	}
 	return !_waitSemaphores.empty() &&
 		   ((getEnabledAccelerationStructureFeatures().accelerationStructure && hasDependentCommandBuffers) ||
-			_device->isPrivateSparseBufferEnabled());
+			(!rtDepWaitNarrow && _device->isPrivateSparseBufferEnabled()));
 }
 
 template <size_t N>

@@ -43,6 +43,9 @@ VkResult MVKCmdDispatch::setContent(MVKCommandBuffer* cmdBuff,
 }
 
 void MVKCmdDispatch::encode(MVKCommandEncoder* cmdEncoder) {
+	// Vulkan permits zero group counts (a no-op), but Metal treats a zero-size
+	// dispatch as an error and aborts the process when API validation is on.
+	if (!_groupCountX || !_groupCountY || !_groupCountZ) { return; }
 	MTLRegion mtlThreadgroupCount = MTLRegionMake3D(_baseGroupX, _baseGroupY, _baseGroupZ, _groupCountX, _groupCountY, _groupCountZ);
 	cmdEncoder->finalizeDispatchState();	// Ensure all updated state has been submitted to Metal
 	id<MTLComputeCommandEncoder> mtlEncoder = cmdEncoder->getMTLComputeEncoder(kMVKCommandUseDispatch);

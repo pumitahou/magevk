@@ -1802,7 +1802,11 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 	// MTLCommandBuffer scheduled-handler than it is to call MTLCommandBuffer presentDrawable:.
 	// But get current drawable now, intead of in handler, because a new drawable might be acquired by then.
 	// Attach present handler before presenting to avoid race condition.
-	id<CAMetalDrawable> mtlDrwbl = getCAMetalDrawable();
+	// MageVK: retain the drawable before getPresentationSignaler() can mark this
+	// image available — a racing acquire can releaseMetalDrawable() and dealloc
+	// it before the retain near the completion handler below. (UAF, also present
+	// upstream.)
+	id<CAMetalDrawable> mtlDrwbl = [getCAMetalDrawable() retain];
 	MVKSwapchainSignaler signaler = getPresentationSignaler();
 	[mtlCmdBuff addScheduledHandler: ^(id<MTLCommandBuffer> mcb) {
 
@@ -1812,9 +1816,27 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 		// to avoid visual disruptions on any presents already on the queue.
 		// Only write the property on an actual transition: writing displaySyncEnabled
 		// every present, mid-scanout, produces stale full-width band flicker.
+		static bool dbgPresent = getenv("MAGE_MVK_DEBUG_PRESENT") != nullptr;
+		static uint64_t dbgN = 0;
+		if (dbgPresent) {
+			uint64_t n = ++dbgN;
+			if (n <= 10 || n % 300 == 0) {
+				fprintf(stderr, "MAGE-DBG present #%llu: mode=%d layerSync=%d\n",
+						(unsigned long long)n, (int)presentInfo.presentMode,
+						(int)mtlDrwbl.layer.displaySyncEnabledMVK);
+			}
+		}
 		if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
-			BOOL syncEnabled = (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
+			// MageVK: honor the same MAGE_MVK_FORCE_FIFO clamp for
+			// per-present mode overrides (VK_EXT_swapchain_maintenance1).
+			static int forceFifoP = -1;
+			if (forceFifoP < 0) {
+				const char* ffEnv = getenv("MAGE_MVK_FORCE_FIFO");
+				forceFifoP = (ffEnv && !strcmp(ffEnv, "1")) ? 1 : 0;
+			}
+			BOOL syncEnabled = forceFifoP ? YES : (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
 			if (mtlDrwbl.layer.displaySyncEnabledMVK != syncEnabled) {
+				if (dbgPresent) { fprintf(stderr, "MAGE-DBG displaySync transition -> %d at present #%llu\n", (int)syncEnabled, (unsigned long long)dbgN); }
 				mtlDrwbl.layer.displaySyncEnabledMVK = syncEnabled;
 			}
 		}
@@ -1826,13 +1848,12 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 	}];
 
 	// Ensure this image, the drawable, and the present fence are not destroyed while
-	// awaiting MTLCommandBuffer completion. We retain the drawable separately because
-	// a new drawable might be acquired by this image by then.
+	// awaiting MTLCommandBuffer completion. The drawable was already retained at
+	// acquisition above (before the image could be re-acquired).
 	// Signal the fence and notify the swapchain that the present has completed
 	// from this callback, because the last one or two presentation completion
 	// callbacks can occasionally stall.
 	retain();
-	[mtlDrwbl retain];
 	auto* fence = presentInfo.fence;
 	if (fence) { fence->retain(); }
 	[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mcb) {

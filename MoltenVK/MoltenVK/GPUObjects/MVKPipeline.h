@@ -585,6 +585,9 @@ public:
 	 */
 	VkResult writeData(size_t* pDataSize, void* pData);
 
+	/** If set, the cache periodically persists itself to this file whenever new shaders are added. */
+	void setPersistFilePath(const std::string& filePath) { _persistFilePath = filePath; }
+
 	/**
 	 * Return a shader library for the shader conversion configuration, from the
 	 * pipeline's pipeline cache, or compiled from source in the shader module.
@@ -621,6 +624,8 @@ protected:
 
 	std::unordered_map<MVKShaderModuleKey, MVKShaderLibraryCache*> _shaderCache;
 	size_t _dataSize = 0;
+	std::string _persistFilePath;
+	uint32_t _dirtyCount = 0;
 	std::mutex _shaderCacheLock;
 	bool _isExternallySynchronized = false;
 	bool _isMergeInternallySynchronized = false;

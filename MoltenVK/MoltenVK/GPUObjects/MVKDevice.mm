@@ -40,6 +40,8 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <vector>
 
 using namespace std;
 
@@ -865,6 +867,26 @@ void MVKPhysicalDevice::getProperties(VkPhysicalDeviceProperties2* properties) {
 	supportedProps12.driverID = VK_DRIVER_ID_MOLTENVK;
 	strcpy(supportedProps12.driverName, kMVKMoltenVKDriverLayerName);
 	strcpy(supportedProps12.driverInfo, MVK_VERSION_STRING);
+	// Mage: when spoofing the device identity (MAGE_VK_VENDOR_ID), align the driver
+	// properties with the spoofed vendor as well. Games such as DOOM: The Dark Ages
+	// treat vendorID == NVIDIA combined with a non-NVIDIA driverID as a software-RT
+	// device and reject it in the launcher GPU check. MAGE_VK_DRIVER_INFO overrides
+	// the reported driverInfo string.
+	static const uint32_t mageSpoofVendorID = (uint32_t)mvkGetEnvVarNumber("MAGE_VK_VENDOR_ID");
+	if (mageSpoofVendorID == 0x10DE) {
+		supportedProps12.driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+		strcpy(supportedProps12.driverName, "NVIDIA");
+		strcpy(supportedProps12.driverInfo, "596.36");
+	} else if (mageSpoofVendorID == 0x1002) {
+		supportedProps12.driverID = VK_DRIVER_ID_AMD_PROPRIETARY;
+		strcpy(supportedProps12.driverName, "AMD proprietary driver");
+		strcpy(supportedProps12.driverInfo, "25.5.1 (AMD proprietary shader compiler)");
+	}
+	const char* mageDriverInfo = getenv("MAGE_VK_DRIVER_INFO");
+	if (mageSpoofVendorID && mageDriverInfo && mageDriverInfo[0]) {
+		memset(supportedProps12.driverInfo, 0, sizeof(supportedProps12.driverInfo));
+		strncpy(supportedProps12.driverInfo, mageDriverInfo, sizeof(supportedProps12.driverInfo) - 1);
+	}
 	supportedProps12.conformanceVersion = testedCTSVer;
 	supportedProps12.denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
 	supportedProps12.roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
@@ -2119,10 +2141,18 @@ VkResult MVKPhysicalDevice::getSurfaceCapabilities(	const VkPhysicalDeviceSurfac
 									VK_IMAGE_USAGE_SAMPLED_BIT);
 
 	// Swapchain-to-surface scaling capabilities.
+	// MageVK: STRETCH is masked unless MAGE_MVK_PRESENT_SCALING=1. Wine arms
+	// VK_PRESENT_SCALING_STRETCH_BIT_EXT on every swapchain whose extent differs
+	// from the window client rect (win32u/vulkan.c), which sets _isDeliberatelyScaled
+	// and drives the contentsGravity scaling path — the mechanism behind the alt-tab
+	// mis-scaling bugs. CrossOver never arms it (its MoltenVK doesn't advertise the
+	// KHR maintenance1 names). Default off until the winemac scale interaction is fixed.
 	if (pScalingCaps) {
 		pScalingCaps->supportedPresentScaling = (VK_PRESENT_SCALING_ONE_TO_ONE_BIT_KHR |
-												 VK_PRESENT_SCALING_ASPECT_RATIO_STRETCH_BIT_KHR |
-												 VK_PRESENT_SCALING_STRETCH_BIT_KHR);
+												 VK_PRESENT_SCALING_ASPECT_RATIO_STRETCH_BIT_KHR);
+		if (mvkGetEnvVarNumber("MAGE_MVK_PRESENT_SCALING", 0)) {
+			pScalingCaps->supportedPresentScaling |= VK_PRESENT_SCALING_STRETCH_BIT_KHR;
+		}
 		pScalingCaps->supportedPresentGravityX = (VK_PRESENT_GRAVITY_MIN_BIT_KHR |
 												  VK_PRESENT_GRAVITY_MAX_BIT_KHR |
 												  VK_PRESENT_GRAVITY_CENTERED_BIT_KHR);
@@ -2451,6 +2481,21 @@ void MVKPhysicalDevice::updateTimestampPeriod() {
 
 #pragma mark Memory models
 
+// Mage: adaptive heap budget (docs/design-memory.md Phase 1). On unified memory
+// the raw heap size is full system RAM, which leads games to budget nearly all
+// of physical memory and starve macOS. When MAGE_VK_HEAP_SIZE_MB is unset, the
+// default cap is min(55% of RAM, recommendedMaxWorkingSetSize) — 16 GB → ~9 GB,
+// 24 GB → ~13 GB. An explicit MAGE_VK_HEAP_SIZE_MB always wins and disables the
+// live pressure adjustment below (kept static for A/B reproducibility).
+static VkDeviceSize mvkMageHeapCapBytes(uint64_t recommendedMaxWorkingSetSize) {
+	uint64_t capMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
+	if (capMB) { return (VkDeviceSize)capMB * MEBI; }
+	uint64_t ramDerived = (uint64_t)(mvkGetSystemMemorySize() * 0.55);
+	uint64_t cap = recommendedMaxWorkingSetSize;
+	if (ramDerived < cap) { cap = ramDerived; }
+	return (VkDeviceSize)cap;
+}
+
 /** Populates the specified memory properties with the memory characteristics of this device. */
 VkResult MVKPhysicalDevice::getMemoryProperties(VkPhysicalDeviceMemoryProperties* pMemoryProperties) {
 	*pMemoryProperties = _memoryProperties;
@@ -2472,13 +2517,22 @@ VkResult MVKPhysicalDevice::getMemoryProperties(VkPhysicalDeviceMemoryProperties
 				}
 				budgetProps->heapBudget[0] = (VkDeviceSize)getRecommendedMaxWorkingSetSize();
 				// Mage: keep the budget consistent with the capped heap (see
-				// MAGE_VK_HEAP_SIZE_MB in initMemoryProperties()).
-				static const uint64_t mageHeapCapMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
-				if (mageHeapCapMB) {
-					VkDeviceSize capBytes = (VkDeviceSize)mageHeapCapMB * MEBI;
-					if (capBytes < budgetProps->heapBudget[0]) { budgetProps->heapBudget[0] = capBytes; }
-				}
+				// mvkMageHeapCapBytes in initMemoryProperties()).
+				uint64_t mageHeapCapEnvMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
+				VkDeviceSize mageCapBytes = mvkMageHeapCapBytes(budgetProps->heapBudget[0]);
+				if (mageCapBytes < budgetProps->heapBudget[0]) { budgetProps->heapBudget[0] = mageCapBytes; }
 				auto currentAllocatedSize = (VkDeviceSize)getCurrentAllocatedSize();
+				if (!mageHeapCapEnvMB && _hasUnifiedMemory) {
+					// Mage: heapBudget is a per-frame-polled hint (DXVK/VKD3D/id Tech 8
+					// all re-read it). Subtract live pressure so budget-aware engines
+					// self-regulate: budget never exceeds current allocation plus the
+					// larger of 1 GB or half of what the OS says is still available.
+					uint64_t avail = mvkGetAvailableMemorySize();
+					VkDeviceSize headroom = (VkDeviceSize)(avail / 2);
+					if (headroom < GIBI) { headroom = GIBI; }
+					VkDeviceSize liveBudget = currentAllocatedSize + headroom;
+					if (liveBudget < budgetProps->heapBudget[0]) { budgetProps->heapBudget[0] = liveBudget; }
+				}
 				if (budgetProps->heapUsage[1] > currentAllocatedSize) {
 					// mapped memory can't be larger than total memory, so ignore and zero-out
 					budgetProps->heapUsage[1] = 0;
@@ -3058,7 +3112,8 @@ void MVKPhysicalDevice::initFeatures() {
 	// Additional non-extension Vulkan 1.2 features.
 	mvkClear(&_vulkan12NoExtFeatures);		// Start with everything cleared
 	_vulkan12NoExtFeatures.samplerMirrorClampToEdge = _metalFeatures.samplerMirrorClampToEdge;
-	_vulkan12NoExtFeatures.drawIndirectCount = _metalFeatures.indirectDrawing;
+	_vulkan12NoExtFeatures.drawIndirectCount = _metalFeatures.indirectDrawing &&
+		!mvkGetEnvVarNumber("MAGE_MVK_NO_DRAW_INDIRECT_COUNT", 0);	// Mage: A/B opt-out (count-buffer edge cases)
 	_vulkan12NoExtFeatures.descriptorIndexing = _metalFeatures.arrayOfTextures && _metalFeatures.arrayOfSamplers;
 	_vulkan12NoExtFeatures.samplerFilterMinmax = _gpuCapabilities.supportsSamplerReduction;
 	_vulkan12NoExtFeatures.shaderOutputViewportIndex = _features.multiViewport;
@@ -3576,14 +3631,12 @@ void MVKPhysicalDevice::initMemoryProperties() {
 
 	// Main heap
 	uint32_t mainHeapIdx = 0;
-	// Mage: on unified memory the raw heap size is the full system RAM, which
-	// leads games to budget nearly all of physical memory and starve macOS.
-	// MAGE_VK_HEAP_SIZE_MB caps the advertised device-local heap (and the
-	// memory-budget extension below) to a game-tunable value.
-	static const uint64_t mageHeapCapMB = (uint64_t)mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB");
+	// Mage: cap the advertised device-local heap (see mvkMageHeapCapBytes).
+	// The adaptive default applies on unified memory only; an explicit
+	// MAGE_VK_HEAP_SIZE_MB caps everywhere, as before.
 	VkDeviceSize mainHeapSize = getVRAMSize();
-	if (mageHeapCapMB) {
-		VkDeviceSize capBytes = (VkDeviceSize)mageHeapCapMB * MEBI;
+	if (_hasUnifiedMemory || mvkGetEnvVarNumber("MAGE_VK_HEAP_SIZE_MB")) {
+		VkDeviceSize capBytes = mvkMageHeapCapBytes(getRecommendedMaxWorkingSetSize());
 		if (capBytes < mainHeapSize) { mainHeapSize = capBytes; }
 	}
 	setMemoryHeap(mainHeapIdx, mainHeapSize, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
@@ -3815,6 +3868,23 @@ void MVKPhysicalDevice::initExtensions() {
 		pWritableExtns->vk_KHR_ray_query.enabled = false;
 	}
 
+	// Mage: A/B opt-out for the fork-enabled draw_indirect_count (flipped from
+	// MVK_NA in MVKExtensions.def; the matching 1.2 feature bit is gated in
+	// initFeatures).
+	if (mvkGetEnvVarNumber("MAGE_MVK_NO_DRAW_INDIRECT_COUNT", 0)) {
+		pWritableExtns->vk_KHR_draw_indirect_count.enabled = false;
+	}
+
+	// Mage: KHR_deferred_host_operations is a no-op here — join() returns
+	// VK_SUCCESS without executing anything and vkCreateRayTracingPipelinesKHR
+	// silently ignores the deferredOperation argument, so games that defer the
+	// heaviest (RT) compiles get a sync block with no warning. Stop advertising
+	// it until deferral is actually implemented; MAGE_MVK_DEFERRED_HOST_OPS=1
+	// restores the old behavior.
+	if (!mvkGetEnvVarNumber("MAGE_MVK_DEFERRED_HOST_OPS", 0)) {
+		pWritableExtns->vk_KHR_deferred_host_operations.enabled = false;
+	}
+
 	if (!_gpuCapabilities.isAppleGPU) {
 		pWritableExtns->vk_AMD_shader_image_load_store_lod.enabled = false;
 		pWritableExtns->vk_IMG_format_pvrtc.enabled = false;
@@ -3871,8 +3941,9 @@ void MVKPhysicalDevice::initVkSemaphoreStyle() {
 	switch (getMVKConfig().semaphoreSupportStyle) {
 		case MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE_METAL_EVENTS_WHERE_SAFE: {
 			bool isNVIDIA = _properties.vendorID == kNVVendorId;
-			bool isRosetta2 = _gpuCapabilities.isAppleGPU && !TARGET_CPU_ARM64;
-			if (!(isRosetta2 || isNVIDIA)) { _vkSemaphoreStyle = MVKSemaphoreStyleUseMTLEvent; }
+			// MageVK: Rosetta 2 exclusion removed. MTLEvent semaphores measured stable and
+			// ~4x faster than single-queue implicit sync under Rosetta on macOS 26+.
+			if (!isNVIDIA) { _vkSemaphoreStyle = MVKSemaphoreStyleUseMTLEvent; }
 			break;
 		}
 		case MVK_CONFIG_VK_SEMAPHORE_SUPPORT_STYLE_METAL_EVENTS:
@@ -4660,6 +4731,47 @@ VkResult MVKDevice::createPipelines(VkPipelineCache pipelineCache,
 	bool ignoreFurtherPipelines = false;
     VkResult rslt = VK_SUCCESS;
     MVKPipelineCache* mvkPLC = (MVKPipelineCache*)pipelineCache;
+	if ( !mvkPLC ) { mvkPLC = getAutoPipelineCache(); }
+
+	// Mage: parallel pipeline creation behind MAGE_MVK_PARALLEL_PIPELINES=1
+	// (A/B knob, default off). id Tech 8 batches pipeline creation at area
+	// transitions and the stock loop below is serial on the calling thread.
+	// Only used when no pipeline derives from another (basePipelineIndex
+	// ordering dependency) and no early-return-on-failure semantics apply.
+	// Known risk to watch in A/B: graphics sub-creations may share mutable
+	// render-pass state; compute pipelines are the safer class.
+	bool canParallelize = count > 1 && mvkGetEnvVarNumber("MAGE_MVK_PARALLEL_PIPELINES", 0);
+	if (canParallelize) {
+		for (uint32_t plIdx = 0; plIdx < count; plIdx++) {
+			const VkPipelineCreateFlags2 f = MVKPipeline::getPipelineCreateFlags(&pCreateInfos[plIdx]);
+			if (mvkIsAnyFlagEnabled(f, VK_PIPELINE_CREATE_2_DERIVATIVE_BIT |
+									 VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT)) {
+				canParallelize = false;
+				break;
+			}
+		}
+	}
+	if (canParallelize) {
+		std::vector<VkResult> results(count, VK_SUCCESS);
+		VkResult* resultsData = results.data();
+		dispatch_apply(count, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^(size_t plIdx) {
+			@autoreleasepool {
+				pPipelines[plIdx] = VK_NULL_HANDLE;
+				MVKPipeline* mvkPL = new PipelineType(this, mvkPLC, VK_NULL_HANDLE, &pCreateInfos[plIdx]);
+				VkResult plRslt = mvkPL->getConfigurationResult();
+				if (plRslt == VK_SUCCESS) {
+					pPipelines[plIdx] = (VkPipeline)mvkPL;
+				} else {
+					mvkPL->destroy();
+					resultsData[plIdx] = plRslt;
+				}
+			}
+		});
+		for (uint32_t plIdx = 0; plIdx < count; plIdx++) {
+			if (results[plIdx] != VK_SUCCESS) { rslt = results[plIdx]; break; }
+		}
+		return rslt;
+	}
 
 	@autoreleasepool {
 		for (uint32_t plIdx = 0; plIdx < count; plIdx++) {
@@ -4699,6 +4811,133 @@ VkResult MVKDevice::createPipelines(VkPipelineCache pipelineCache,
 	}
 
     return rslt;
+}
+
+// Returns the path of the file used to persist the automatic pipeline cache, or an empty
+// string if MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR is not set.
+static std::string mvkAutoPipelineCachePath(const char* cacheDir) {
+	return (cacheDir && cacheDir[0]) ? std::string(cacheDir) + "/mvk-auto-pipeline-cache.bin" : "";
+}
+
+MVKPipelineCache* MVKDevice::getAutoPipelineCache() {
+	std::string cachePath = mvkAutoPipelineCachePath(getMVKConfig().autoPipelineCacheDir);
+	if (cachePath.empty()) { return nullptr; }
+
+	lock_guard<mutex> lock(_autoPipelineCacheLock);
+	if ( !_autoPipelineCache ) {
+		std::vector<char> initData;
+		std::ifstream inFile(cachePath, std::ios::binary | std::ios::ate);
+		if (inFile) {
+			std::streamsize dataSize = inFile.tellg();
+			if (dataSize > 0) {
+				initData.resize((size_t)dataSize);
+				inFile.seekg(0);
+				inFile.read(initData.data(), dataSize);
+			}
+		}
+		VkPipelineCacheCreateInfo createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+		createInfo.initialDataSize = initData.size();
+		createInfo.pInitialData = initData.empty() ? nullptr : initData.data();
+		_autoPipelineCache = createPipelineCache(&createInfo, nullptr);
+		_autoPipelineCache->setPersistFilePath(cachePath);
+		MVKLogInfo("Created automatic pipeline cache, loaded %zu bytes from %s.", initData.size(), cachePath.c_str());
+	}
+	return _autoPipelineCache;
+}
+
+// Returns the path of the file used to persist the automatic Metal binary archive, or an
+// empty string if MVK_CONFIG_AUTO_PIPELINE_CACHE_DIR is not set.
+static std::string mvkAutoBinaryArchivePath(const char* cacheDir) {
+	return (cacheDir && cacheDir[0]) ? std::string(cacheDir) + "/mvk-auto-binary-archive.bin" : "";
+}
+
+id<MTLBinaryArchive> MVKDevice::getAutoBinaryArchive() {
+	static const bool binaryArchiveEnabled = mvkGetEnvVarNumber("MAGE_MVK_BINARY_ARCHIVE", 0) != 0.0;
+	if ( !binaryArchiveEnabled ) { return nil; }
+	std::string archivePath = mvkAutoBinaryArchivePath(getMVKConfig().autoPipelineCacheDir);
+	if (archivePath.empty()) { return nil; }
+
+	lock_guard<mutex> lock(_autoBinaryArchiveLock);
+	if ( !_autoBinaryArchive ) {
+		@autoreleasepool {
+			MTLBinaryArchiveDescriptor* archiveDesc = [[MTLBinaryArchiveDescriptor alloc] init];	// temp retained
+			archiveDesc.url = [NSURL fileURLWithPath: @(archivePath.c_str())];
+			NSError* err = nil;
+			_autoBinaryArchive = [_physicalDevice->getMTLDevice() newBinaryArchiveWithDescriptor: archiveDesc error: &err];	// retained
+			if ( !_autoBinaryArchive ) {
+
+				// The persisted file may be missing or incompatible with this GPU or OS.
+				// Fall back to an empty archive rather than failing pipeline creation.
+				MVKLogInfo("Could not load Metal binary archive from %s (%s). Starting with an empty archive.",
+						   archivePath.c_str(), err.localizedDescription.UTF8String);
+				archiveDesc.url = nil;
+				err = nil;
+				_autoBinaryArchive = [_physicalDevice->getMTLDevice() newBinaryArchiveWithDescriptor: archiveDesc error: &err];	// retained
+				if ( !_autoBinaryArchive ) {
+					MVKLogError("Could not create a Metal binary archive (%s). Binary archive persistence is disabled.",
+								err.localizedDescription.UTF8String);
+				}
+			} else {
+				MVKLogInfo("Created Metal binary archive, loaded from %s.", archivePath.c_str());
+			}
+			[archiveDesc release];
+		}
+	}
+	return _autoBinaryArchive;
+}
+
+void MVKDevice::addRenderPipelineFunctionsToAutoBinaryArchive(MTLRenderPipelineDescriptor* plDesc) {
+	id<MTLBinaryArchive> archive = getAutoBinaryArchive();
+	if ( !archive ) { return; }
+
+	lock_guard<mutex> lock(_autoBinaryArchiveLock);
+	NSError* err = nil;
+	if ( ![archive addRenderPipelineFunctionsWithDescriptor: plDesc error: &err] ) {
+		MVKLogDebug("Failed to add render pipeline functions to Metal binary archive: %s", err.localizedDescription.UTF8String);
+	}
+}
+
+void MVKDevice::addComputePipelineFunctionsToAutoBinaryArchive(MTLComputePipelineDescriptor* plDesc) {
+	id<MTLBinaryArchive> archive = getAutoBinaryArchive();
+	if ( !archive ) { return; }
+
+	lock_guard<mutex> lock(_autoBinaryArchiveLock);
+	NSError* err = nil;
+	if ( ![archive addComputePipelineFunctionsWithDescriptor: plDesc error: &err] ) {
+		MVKLogDebug("Failed to add compute pipeline functions to Metal binary archive: %s", err.localizedDescription.UTF8String);
+	}
+}
+
+void MVKDevice::saveAutoPipelineCache() {
+	std::string cachePath = mvkAutoPipelineCachePath(getMVKConfig().autoPipelineCacheDir);
+	if (cachePath.empty()) { return; }
+
+	if (_autoPipelineCache) {
+		size_t dataSize = 0;
+		if (_autoPipelineCache->writeData(&dataSize, nullptr) == VK_SUCCESS && dataSize != 0) {
+			std::vector<char> data(dataSize);
+			if (_autoPipelineCache->writeData(&dataSize, data.data()) == VK_SUCCESS) {
+				std::ofstream outFile(cachePath, std::ios::binary | std::ios::trunc);
+				outFile.write(data.data(), dataSize);
+				outFile.close();
+				MVKLogInfo("Persisted %zu bytes of automatic pipeline cache to %s.", dataSize, cachePath.c_str());
+			}
+		}
+	}
+
+	if (_autoBinaryArchive) {
+		std::string archivePath = mvkAutoBinaryArchivePath(getMVKConfig().autoPipelineCacheDir);
+		lock_guard<mutex> lock(_autoBinaryArchiveLock);
+		NSError* err = nil;
+		NSURL* archiveURL = [NSURL fileURLWithPath: @(archivePath.c_str())];
+		if ( [_autoBinaryArchive serializeToURL: archiveURL error: &err] ) {
+			MVKLogInfo("Persisted Metal binary archive to %s.", archivePath.c_str());
+		} else {
+			MVKLogError("Failed to persist Metal binary archive to %s (%s).",
+						archivePath.c_str(), err.localizedDescription.UTF8String);
+		}
+	}
 }
 
 // Create concrete implementations of the two variations of the mvkCreatePipelines() function
@@ -5299,6 +5538,7 @@ void MVKDevice::logPerformanceSummary() {
 	logDuration(queue.retrieveMTLCommandBuffer);
 	logDuration(queue.commandBufferEncoding);
 	logDuration(queue.submitCommandBuffers);
+	logDuration(queue.waitSubmitCommandBuffers);
 	logDuration(queue.mtlCommandBufferExecution);
 	logDuration(queue.retrieveCAMetalDrawable);
 	logDuration(queue.presentSwapchains);
@@ -5338,6 +5578,7 @@ const char* MVKDevice::getActivityPerformanceDescription(MVKPerformanceTracker& 
 	ifActivityReturnName(queue.retrieveMTLCommandBuffer,           "Retrieve a MTLCommandBuffer");
 	ifActivityReturnName(queue.commandBufferEncoding,              "Encode VkCommandBuffer to MTLCommandBuffer");
 	ifActivityReturnName(queue.submitCommandBuffers,               "vkQueueSubmit() encoding to MTLCommandBuffers");
+	ifActivityReturnName(queue.waitSubmitCommandBuffers,           "Wait for encoding dependency before submit");
 	ifActivityReturnName(queue.mtlCommandBufferExecution,          "Execute a MTLCommandBuffer on GPU");
 	ifActivityReturnName(queue.retrieveCAMetalDrawable,            "Retrieve a CAMetalDrawable");
 	ifActivityReturnName(queue.presentSwapchains,                  "Present swapchains in on GPU");
@@ -6161,6 +6402,10 @@ MVKDevice::~MVKDevice() {
 	if (!_capturePipeFileName.empty()) { unlink(_capturePipeFileName.c_str()); }
 
 	mvkDestroyContainerContents(_privateDataSlots);
+
+	saveAutoPipelineCache();
+	if (_autoPipelineCache) { _autoPipelineCache->destroy(); }
+	[_autoBinaryArchive release];
 
 	MVKLogInfo("Destroyed VkDevice on GPU %s with %d Vulkan extensions enabled.",
 			   getName(), _enabledExtensions.getEnabledCount());

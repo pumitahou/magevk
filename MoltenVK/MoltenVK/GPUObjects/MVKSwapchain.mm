@@ -122,7 +122,17 @@ bool MVKSwapchain::getIsSurfaceLost() {
 VkResult MVKSwapchain::getSurfaceStatus() {
 	if (_device->getConfigurationResult() != VK_SUCCESS) { return _device->getConfigurationResult(); }
 	if (getIsSurfaceLost()) { return VK_ERROR_SURFACE_LOST_KHR; }
-	if ( !hasOptimalSurface() ) { return VK_SUBOPTIMAL_KHR; }
+	if ( !hasOptimalSurface() ) {
+		// MageVK: some engines (id Tech 8) only recreate the swapchain on
+		// VK_ERROR_OUT_OF_DATE_KHR and ignore VK_SUBOPTIMAL_KHR forever.
+		// MAGE_MVK_OUT_OF_DATE_ON_RESIZE=1 escalates. Default: spec behavior.
+		static int oodOnResize = -1;
+		if (oodOnResize < 0) {
+			const char* oodEnv = getenv("MAGE_MVK_OUT_OF_DATE_ON_RESIZE");
+			oodOnResize = (oodEnv && !strcmp(oodEnv, "1")) ? 1 : 0;
+		}
+		return oodOnResize ? VK_ERROR_OUT_OF_DATE_KHR : VK_SUBOPTIMAL_KHR;
+	}
 	return VK_SUCCESS;
 }
 
@@ -130,7 +140,14 @@ VkResult MVKSwapchain::getSurfaceStatus() {
 // swapchain scaling, or if the surface is headless, or if the surface extent has not changed 
 // since the swapchain was created, and the surface will not need to be scaled when composited.
 bool MVKSwapchain::hasOptimalSurface() {
-	if (_isDeliberatelyScaled || isHeadless()) { return true; }
+	if (isHeadless()) { return true; }
+	if (_isDeliberatelyScaled) {
+		// MageVK: deliberate scaling (e.g. wine's STRETCH attach) must not silence
+		// surface DRIFT. The mismatch against the game-chosen extent is by design,
+		// but if the surface's natural extent changed since creation (contentsScale
+		// flip, monitor change), report non-optimal so the app recreates us.
+		return mvkVkExtent2DsAreEqual(_surface->getNaturalExtent(), _creationNaturalExtent);
+	}
 
 	VkExtent2D surfExtent = _surface->getExtent();
 	return (mvkVkExtent2DsAreEqual(surfExtent, _imageExtent) &&
@@ -171,6 +188,13 @@ void MVKSwapchain::markFrameInterval() {
 
 	addPerformanceInterval(getPerformanceStats().queue.frameInterval, prevFrameTime, _lastFrameTime, true);
 
+	// MageVK: per-window frame stats. The cumulative average is poisoned by
+	// thousands of sub-ms boot/menu frames, so track the window separately.
+	double winIntervalMs = mvkGetElapsedMilliseconds(prevFrameTime, _lastFrameTime);
+	_perfWindowFrames++;
+	_perfWindowSumMs += winIntervalMs;
+	if (winIntervalMs > _perfWindowMaxMs) { _perfWindowMaxMs = winIntervalMs; }
+
 	auto& mvkCfg = getMVKConfig();
 	bool shouldLogOnFrames = mvkCfg.performanceTracking && mvkCfg.activityPerformanceLoggingStyle == MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE_FRAME_COUNT;
 	if (shouldLogOnFrames && (mvkCfg.performanceLoggingFrameCount > 0) && (++_currentPerfLogFrameCount >= mvkCfg.performanceLoggingFrameCount)) {
@@ -179,6 +203,14 @@ void MVKSwapchain::markFrameInterval() {
 				   mvkCfg.performanceLoggingFrameCount,
 				   (1000.0 / getPerformanceStats().queue.frameInterval.average),
 				   mvkGetElapsedMilliseconds() / 1000.0);
+		if (_perfWindowFrames) {
+			MVKLogInfo("MageVK window: %u frames, window avg %.3f ms (%.1f FPS), window max %.3f ms",
+					   _perfWindowFrames, _perfWindowSumMs / _perfWindowFrames,
+					   1000.0 * _perfWindowFrames / _perfWindowSumMs, _perfWindowMaxMs);
+		}
+		_perfWindowFrames = 0;
+		_perfWindowSumMs = 0;
+		_perfWindowMaxMs = 0;
 		if (getMVKConfig().activityPerformanceLoggingStyle == MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE_FRAME_COUNT) {
 			_device->logPerformanceSummary();
 		}
@@ -437,6 +469,12 @@ MVKSwapchain::MVKSwapchain(MVKDevice* device, const VkSwapchainCreateInfoKHR* pC
 	uint32_t imgCnt = mvkClamp(pCreateInfo->minImageCount,
 							   mtlFeats.minSwapchainImageCount,
 							   mtlFeats.maxSwapchainImageCount);
+	static bool dbgPresent = getenv("MAGE_MVK_DEBUG_PRESENT") != nullptr;
+	if (dbgPresent) {
+		fprintf(stderr, "MAGE-DBG swapchain create: minImageCount=%u clamped=%u presentMode=%d compatModes=%zu extent=%ux%u\n",
+				pCreateInfo->minImageCount, imgCnt, (int)pCreateInfo->presentMode,
+				_compatiblePresentModes.size(), pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height);
+	}
 	initCAMetalLayer(pCreateInfo, pScalingInfo, imgCnt);
     initSurfaceImages(pCreateInfo, imgCnt);		// After initCAMetalLayer()
 }
@@ -500,10 +538,37 @@ void MVKSwapchain::initCAMetalLayer(const VkSwapchainCreateInfoKHR* pCreateInfo,
 
 	auto minMagFilter = getMVKConfig().swapchainMinMagFilterUseNearest ? kCAFilterNearest : kCAFilterLinear;
 	mtlLayer.drawableSize = mvkCGSizeFromVkExtent2D(_imageExtent);
+	_creationNaturalExtent = _surface->getNaturalExtent();	// MageVK: drift baseline for hasOptimalSurface()
 	mtlLayer.device = getMTLDevice();
 	mtlLayer.pixelFormat = getPixelFormats()->getMTLPixelFormat(pCreateInfo->imageFormat);
 	mtlLayer.maximumDrawableCount = imgCnt;
-	mtlLayer.displaySyncEnabledMVK = (pCreateInfo->presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
+	// MageVK: CAMetalLayer.nextDrawable times out after ~1s when the window is
+	// occluded, and getCAMetalDrawable gives up after imageCount retries with
+	// VK_ERROR_OUT_OF_POOL_MEMORY — the "stalls until alt-tab" / post-alt-tab
+	// black-screen path. Opt in with MAGE_MVK_NO_DRAWABLE_TIMEOUT=1.
+	static int noDrawableTimeout = -1;
+	if (noDrawableTimeout < 0) {
+		const char* ndtEnv = getenv("MAGE_MVK_NO_DRAWABLE_TIMEOUT");
+		noDrawableTimeout = (ndtEnv && !strcmp(ndtEnv, "1")) ? 1 : 0;
+	}
+	if (noDrawableTimeout) { mtlLayer.allowsNextDrawableTimeout = NO; }
+	// MageVK: tearing-flicker guard. Engines that pick IMMEDIATE drive
+	// presents unsynced, which shows on macOS as stale full-width scanline
+	// bands. Clamping IMMEDIATE to FIFO keeps presents vsync-paced.
+	// OFF by default: it measurably slowed TDA and did not fix its
+	// texture flicker (2026-08-03 A/B). Opt in with MAGE_MVK_FORCE_FIFO=1.
+	static int forceFifo = -1;
+	static bool dbgPresentFF = getenv("MAGE_MVK_DEBUG_PRESENT") != nullptr;
+	if (forceFifo < 0) {
+		const char* ffEnv = getenv("MAGE_MVK_FORCE_FIFO");
+		forceFifo = (ffEnv && !strcmp(ffEnv, "1")) ? 1 : 0;
+	}
+	VkPresentModeKHR effectiveMode = pCreateInfo->presentMode;
+	if (forceFifo && effectiveMode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+		effectiveMode = VK_PRESENT_MODE_FIFO_KHR;
+		if (dbgPresentFF) { fprintf(stderr, "MAGE-DBG swapchain: clamped IMMEDIATE -> FIFO\n"); }
+	}
+	mtlLayer.displaySyncEnabledMVK = (effectiveMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
 	// Present drawables immediately instead of deferring to the next CA
 	// transaction commit. Deferred presents let the compositor re-composite
 	// stale drawables, visible as flicker bands over new content.

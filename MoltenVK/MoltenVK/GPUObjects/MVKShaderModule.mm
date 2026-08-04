@@ -417,6 +417,11 @@ MVKMTLFunction MVKShaderModule::getMTLFunction(SPIRVToMSLConversionConfiguration
 											   MVKPipeline* pipeline,
 											   VkPipelineCreationFeedback* pShaderFeedback,
 											   MTLFunctionOptions mtlFuncOptions) {
+	// Metal has no 64-bit shader atomics. When the feature is faked at the device
+	// level, degrade them to non-atomic read-modify-write sequences. This must be
+	// applied before any pipeline cache lookup, so the option is part of the cache key.
+	pShaderConfig->options.mslOptions.emulate_int64_atomics = getMVKConfig().fakeShaderBufferInt64Atomics;
+
 	MVKShaderLibrary* mvkLib = _directMSLLibrary;
 	if ( !mvkLib ) {
 		uint64_t startTime = pShaderFeedback ? mvkGetTimestamp() : getPerformanceTimestamp();
@@ -440,10 +445,6 @@ bool MVKShaderModule::convert(SPIRVToMSLConversionConfiguration* pShaderConfig,
 	const auto& mvkCfg = getMVKConfig();
 	bool shouldLogCode = mvkCfg.debugMode;
 	bool shouldLogEstimatedGLSL = shouldLogCode && mvkCfg.shaderLogEstimatedGLSL;
-
-	// Metal has no 64-bit shader atomics. When the feature is faked at the device
-	// level, degrade them to non-atomic read-modify-write sequences here.
-	pShaderConfig->options.mslOptions.emulate_int64_atomics = mvkCfg.fakeShaderBufferInt64Atomics;
 
 	uint64_t startTime = getPerformanceTimestamp();
 	bool wasConverted = _spvConverter.convert(*pShaderConfig, conversionResult, shouldLogCode, shouldLogCode, shouldLogEstimatedGLSL);

@@ -139,10 +139,14 @@ protected:
 	uint64_t _currentPresentId = 0;
 	uint64_t _lastFrameTime = 0;
 	VkExtent2D _imageExtent = {0, 0};
+	VkExtent2D _creationNaturalExtent = {0, 0};
 	std::atomic<uint32_t> _unpresentedImageCount = 0;
 	uint32_t _currentPerfLogFrameCount = 0;
 	uint32_t _presentHistoryCount = 0;
 	uint32_t _presentHistoryIndex = 0;
 	uint32_t _presentHistoryHeadIndex = 0;
+	uint32_t _perfWindowFrames = 0;
+	double _perfWindowSumMs = 0;
+	double _perfWindowMaxMs = 0;
 	bool _isDeliberatelyScaled = false;
 };

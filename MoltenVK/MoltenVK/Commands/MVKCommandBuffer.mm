@@ -407,7 +407,18 @@ void MVKCommandBuffer::recordTimestampCommand() {
 
 void MVKCommandBuffer::recordBindPipeline(MVKCmdBindPipeline* mvkBindPipeline) {
 	_lastTessellationPipeline = mvkBindPipeline->isTessellationPipeline() ? mvkBindPipeline : nullptr;
-	if (mvkBindPipeline->usesAccelerationStructures()) { _requiresEncodingDependencyWait = true; }
+	// MageVK: merely BINDING an RT/ray-query pipeline flags the whole command
+	// buffer, which makes every frame's submit CPU-block on a GPU drain
+	// (requiresEncodingDependencyWait -> waitUntilCompleted). Ray queries only
+	// read AS's; GPU-side ordering is handled by the queue's event waits.
+	// MAGE_MVK_RT_DEP_WAIT_NARROW=1 restricts the flag to command buffers that
+	// actually record AS build/copy/serialize/traceRays commands.
+	static int rtDepWaitNarrow = -1;
+	if (rtDepWaitNarrow < 0) {
+		const char* rdwEnv = getenv("MAGE_MVK_RT_DEP_WAIT_NARROW");
+		rtDepWaitNarrow = (rdwEnv && !strcmp(rdwEnv, "1")) ? 1 : 0;
+	}
+	if (!rtDepWaitNarrow && mvkBindPipeline->usesAccelerationStructures()) { _requiresEncodingDependencyWait = true; }
 }
 
 

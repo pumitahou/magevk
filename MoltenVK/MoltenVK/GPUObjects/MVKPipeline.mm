@@ -27,6 +27,8 @@
 #include "mvk_datatypes.hpp"
 #include <sys/stat.h>
 #include <sstream>
+#include <fstream>
+#include <vector>
 
 #ifndef MVK_USE_CEREAL
 #define MVK_USE_CEREAL (1)
@@ -3653,6 +3655,21 @@ void MVKPipelineCache::readData(const VkPipelineCacheCreateInfo* pCreateInfo) {
 // Mark the cache as dirty, so that existing streaming info is released
 void MVKPipelineCache::markDirty() {
 	_dataSize = 0;
+
+	// Persisted caches (see MVKDevice::getAutoPipelineCache()) write themselves out after
+	// every 25 added shaders, so most entries survive even an unclean process exit.
+	// Called with _shaderCacheLock held, so use writeDataImpl() directly.
+	if ( !_persistFilePath.empty() && ++_dirtyCount >= 25 ) {
+		_dirtyCount = 0;
+		size_t dataSize = 0;
+		if (writeDataImpl(&dataSize, nullptr) == VK_SUCCESS && dataSize) {
+			std::vector<char> data(dataSize);
+			if (writeDataImpl(&dataSize, data.data()) == VK_SUCCESS) {
+				std::ofstream outFile(_persistFilePath, std::ios::binary | std::ios::trunc);
+				outFile.write(data.data(), dataSize);
+			}
+		}
+	}
 }
 
 VkResult MVKPipelineCache::mergePipelineCaches(uint32_t srcCacheCount, const VkPipelineCache* pSrcCaches) {
@@ -3958,6 +3975,10 @@ MVKPipelineCache::~MVKPipelineCache() {
 id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(MTLRenderPipelineDescriptor* mtlRPLDesc) {
 	unique_lock<mutex> lock(_completionLock);
 
+	// On a binary archive cache hit Metal skips the compiler backend entirely.
+	id<MTLBinaryArchive> archive = getDevice()->getAutoBinaryArchive();
+	if (archive) { mtlRPLDesc.binaryArchives = @[archive]; }
+
 	compile(lock, ^{
 		auto mtlDev = getMTLDevice();
 		@synchronized (mtlDev) {
@@ -3968,6 +3989,10 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
 									   }];
 		}
 	});
+
+	if (_mtlRenderPipelineState && archive) {
+		getDevice()->addRenderPipelineFunctionsToAutoBinaryArchive(mtlRPLDesc);
+	}
 
 	return [_mtlRenderPipelineState retain];
 }
@@ -3992,6 +4017,10 @@ MVKRenderPipelineCompiler::~MVKRenderPipelineCompiler() {
 id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineState(MTLComputePipelineDescriptor* plDesc) {
 	unique_lock<mutex> lock(_completionLock);
 
+	// On a binary archive cache hit Metal skips the compiler backend entirely.
+	id<MTLBinaryArchive> archive = getDevice()->getAutoBinaryArchive();
+	if (archive) { plDesc.binaryArchives = @[archive]; }
+
 	compile(lock, ^{
 		auto mtlDev = getMTLDevice();
 		@synchronized (mtlDev) {
@@ -4003,6 +4032,10 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
 										}];
 		}
 	});
+
+	if (_mtlComputePipelineState && archive) {
+		getDevice()->addComputePipelineFunctionsToAutoBinaryArchive(plDesc);
+	}
 
 	return [_mtlComputePipelineState retain];
 }

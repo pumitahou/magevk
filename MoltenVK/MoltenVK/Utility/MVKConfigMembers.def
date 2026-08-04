@@ -84,6 +84,7 @@ MVK_CONFIG_MEMBER(shouldMaximizeConcurrentCompilation,    VkBool32,             
 MVK_CONFIG_MEMBER(timestampPeriodLowPassAlpha,            float,                                    TIMESTAMP_PERIOD_LOWPASS_ALPHA)
 MVK_CONFIG_MEMBER(useMetalPrivateAPI,                     VkBool32,                                 USE_METAL_PRIVATE_API)
 MVK_CONFIG_MEMBER_STRING(shaderDumpDir,                   char*,                                    SHADER_DUMP_DIR)
+MVK_CONFIG_MEMBER_STRING(autoPipelineCacheDir,            char*,                                    AUTO_PIPELINE_CACHE_DIR)
 MVK_CONFIG_MEMBER(shaderLogEstimatedGLSL,                 VkBool32,                                 SHADER_LOG_ESTIMATED_GLSL)
 MVK_CONFIG_MEMBER(liveCheckAllResources,                  VkBool32,                                 LIVE_CHECK_ALL_RESOURCES)
 MVK_CONFIG_MEMBER(enableExperimentalRayTracing,           VkBool32,                                 ENABLE_EXPERIMENTAL_RAY_TRACING)
