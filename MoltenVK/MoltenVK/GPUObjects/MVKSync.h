@@ -142,6 +142,10 @@ public:
 	 * semaphore to have.
 	 */
 	virtual void encodeWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t value) = 0;
+	virtual uint64_t deferWait() { return 0; }
+	virtual void encodeDeferredWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t deferToken) {
+		encodeWait(mtlCmdBuff, deferToken);
+	}
 
 	/**
 	 * Signals this semaphore.
@@ -237,6 +241,8 @@ class MVKSemaphoreMTLEvent : public MVKSemaphore {
 
 public:
 	void encodeWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t value) override;
+	uint64_t deferWait() override;
+	void encodeDeferredWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t deferToken) override;
 	void encodeSignal(id<MTLCommandBuffer> mtlCmdBuff, uint64_t value) override;
 	uint64_t deferSignal() override;
 	void encodeDeferredSignal(id<MTLCommandBuffer> mtlCmdBuff, uint64_t deferToken) override;

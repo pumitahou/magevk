@@ -679,14 +679,12 @@ VkResult MVKAccelerationStructureCanonicalBuild::prepareAndEncode(
 	if (!_buffer) { return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
 	_commandEncoder = cmdEncoder;
 
-	id<MTLBlitCommandEncoder> encoder =
-		cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyAccelerationStructure);
-	[encoder fillBuffer:_buffer range:NSMakeRange(0, static_cast<NSUInteger>(_layout.serializedSize)) value:0];
 	encodeCanonicalBytes(cmdEncoder, _buffer, 0, &header, sizeof(header));
 	encodeCanonicalBytes(cmdEncoder, _buffer, _layout.payloadOffset, &payload, sizeof(payload));
 	encodeCanonicalBytes(cmdEncoder, _buffer, _layout.recordTableOffset,
 					 records.data(), static_cast<NSUInteger>(records.size() * sizeof(records[0])));
-	encoder = cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyAccelerationStructure);
+	id<MTLBlitCommandEncoder> encoder =
+		cmdEncoder->getMTLBlitEncoder(kMVKCommandUseCopyAccelerationStructure);
 	for (const auto& copy : copies) {
 		[encoder copyFromBuffer:copy.source
 			sourceOffset:copy.sourceOffset
@@ -998,6 +996,7 @@ static MTLAccelerationStructureDescriptor* newDeserializedBLASDescriptor(
 			geometry.vertexStride = static_cast<NSUInteger>(record.vertexStride);
 			geometry.vertexFormat = mvkMTLAccelerationStructureVertexFormatFromVkFormat(
 				static_cast<VkFormat>(record.vertexFormat));
+			geometry.intersectionFunctionTableOffset = static_cast<NSUInteger>(index);
 			geometry.vertexBuffer = serializationBuffer;
 			if (record.vertexSize) {
 				geometry.vertexBufferOffset = static_cast<NSUInteger>(record.vertexOffset);
@@ -1056,6 +1055,7 @@ static MTLAccelerationStructureDescriptor* newDeserializedBLASDescriptor(
 			geometry.boundingBoxStride = record.primitiveCount ||
 				record.vertexStride >= sizeof(VkAabbPositionsKHR)
 				? static_cast<NSUInteger>(record.vertexStride) : sizeof(VkAabbPositionsKHR);
+			geometry.intersectionFunctionTableOffset = static_cast<NSUInteger>(index);
 			geometry.boundingBoxBuffer = serializationBuffer;
 			if (record.aabbSize) {
 				geometry.boundingBoxBufferOffset = static_cast<NSUInteger>(record.aabbOffset);
@@ -1261,11 +1261,18 @@ void MVKCmdCopyMemoryToAccelerationStructure::encode(MVKCommandEncoder* cmdEncod
 
 	const MVKMTLBufferAllocation* scratch = cmdEncoder->getTempMTLBuffer(
 		static_cast<NSUInteger>(sizes.buildScratchBufferSize), true);
+	if (!scratch || !scratch->_mtlBuffer) {
+		[descriptor release];
+		releaseAccelerationStructureBuffer(cmdEncoder->getDevice(), serializationBuffer);
+		cmdEncoder->reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY,
+			"vkCmdCopyMemoryToAccelerationStructureKHR(): The build scratch buffer could not be allocated.");
+		return;
+	}
 
 	MVKAccelerationStructureStorageGeneration* generation = nullptr;
 	uint64_t instanceMetadataSize =
 		serialization.payload.accelerationStructureType == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
-			? serialization.payload.recordCount * sizeof(uint32_t) * 2
+			? serialization.payload.recordCount * sizeof(uint32_t)
 			: 0;
 	VkResult result = _accelerationStructure->retainFullWriteGeneration(
 		sizes.accelerationStructureSize, instanceMetadataSize, generation);

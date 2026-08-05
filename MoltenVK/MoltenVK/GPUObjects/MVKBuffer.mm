@@ -98,7 +98,7 @@ VkResult MVKBuffer::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDeviceSize memOf
 	MVKSmallVector<MVKAccelerationStructure*, 1> accelerationStructures;
 	id<MTLBuffer> failedMTLBuffer = nil;
 	VkResult result = VK_SUCCESS;
-	bool gpuAddressable =
+	bool gpuAddressable = getEnabledAccelerationStructureFeatures().accelerationStructure &&
 		mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT);
 	{
 		lock_guard<mutex> lock(_lock);
@@ -359,7 +359,8 @@ void MVKBuffer::detachMemory() {
 		buf = _mtlBuffer;
 		_mtlBuffer = nil;
 	}
-	if (mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT)) {
+	if (getEnabledAccelerationStructureFeatures().accelerationStructure &&
+		mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT)) {
 		_device->invalidateGPUAddressableBufferIndex();
 	}
 	if (buf) {

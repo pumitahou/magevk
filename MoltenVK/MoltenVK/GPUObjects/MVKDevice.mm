@@ -42,6 +42,7 @@
 #include <cmath>
 #include <fstream>
 #include <vector>
+#include <unordered_set>
 
 using namespace std;
 
@@ -587,10 +588,12 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
 			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR: {
 				auto* rayTracingFeatures = (VkPhysicalDeviceRayTracingPipelineFeaturesKHR*)next;
-				rayTracingFeatures->rayTracingPipeline = _metalFeatures.accelerationStructures && _supportsFunctionPointers;
+				rayTracingFeatures->rayTracingPipeline = _metalFeatures.accelerationStructures && _supportsFunctionPointers &&
+					_isUsingMetalArgumentBuffers && MVK_SPIRV_CROSS_RT_PIPELINE;
 				rayTracingFeatures->rayTracingPipelineShaderGroupHandleCaptureReplay = false;
 				rayTracingFeatures->rayTracingPipelineShaderGroupHandleCaptureReplayMixed = false;
-				rayTracingFeatures->rayTracingPipelineTraceRaysIndirect = _metalFeatures.accelerationStructures && _supportsFunctionPointers;
+				rayTracingFeatures->rayTracingPipelineTraceRaysIndirect = _metalFeatures.accelerationStructures && _supportsFunctionPointers &&
+					_isUsingMetalArgumentBuffers && MVK_SPIRV_CROSS_RT_PIPELINE;
 				rayTracingFeatures->rayTraversalPrimitiveCulling = false;
 				break;
 			}
@@ -655,7 +658,8 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
 			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR: {
 				auto* rayQueryFeatures = (VkPhysicalDeviceRayQueryFeaturesKHR*)next;
-				rayQueryFeatures->rayQuery = _metalFeatures.accelerationStructures && _supportsRaytracingFromRender;
+				rayQueryFeatures->rayQuery = _metalFeatures.accelerationStructures && _supportsRaytracingFromRender &&
+					MVK_SPIRV_CROSS_RT_PROFILE;
 				break;
 			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_MAINTENANCE_1_FEATURES_KHR: {
@@ -3559,6 +3563,7 @@ void MVKPhysicalDevice::initPipelineCacheUUID() {
 	// might affect the contents of the pipeline cache (mostly MSL content).
 	uint32_t mtlFeatures = 0;
 	mtlFeatures |= _isUsingMetalArgumentBuffers << 0;
+	mtlFeatures |= MVK_SPIRV_CROSS_RT_PROFILE << 1;
 	*(uint32_t*)&_properties.pipelineCacheUUID[uuidComponentOffset] = NSSwapHostIntToBig(mtlFeatures);
 	uuidComponentOffset += sizeof(mtlFeatures);
 }
@@ -3860,11 +3865,12 @@ void MVKPhysicalDevice::initExtensions() {
 		pWritableExtns->vk_KHR_ray_query.enabled = false;
 		pWritableExtns->vk_KHR_ray_tracing_maintenance1.enabled = false;
 	}
-	if (!_metalFeatures.accelerationStructures || !_supportsFunctionPointers) {
+	if (!_metalFeatures.accelerationStructures || !_supportsFunctionPointers || !_isUsingMetalArgumentBuffers ||
+		!MVK_SPIRV_CROSS_RT_PIPELINE) {
 		pWritableExtns->vk_KHR_pipeline_library.enabled = false;
 		pWritableExtns->vk_KHR_ray_tracing_pipeline.enabled = false;
 	}
-	if (!_metalFeatures.accelerationStructures || !_supportsRaytracingFromRender) {
+	if (!_metalFeatures.accelerationStructures || !_supportsRaytracingFromRender || !MVK_SPIRV_CROSS_RT_PROFILE) {
 		pWritableExtns->vk_KHR_ray_query.enabled = false;
 	}
 
@@ -5270,8 +5276,10 @@ void MVKDevice::getAccelerationStructureAddressTable(
 	table[0] = capacity - 1;
 	table[1] = entries.size();
 	resources.clear();
+	std::unordered_set<id<MTLResource>> seenResources;
+	seenResources.reserve(entries.size() * 3);
 	auto addResource = [&](id<MTLResource> resource) {
-		if (resource && std::find(resources.begin(), resources.end(), resource) == resources.end()) {
+		if (resource && seenResources.insert(resource).second) {
 			resources.push_back(resource);
 		}
 	};

@@ -1101,6 +1101,7 @@ MVK_PUBLIC_VULKAN_SYMBOL VkResult vkCreateRayTracingPipelinesKHR(
 	MVKTraceVulkanCallStart();
 	MVKDevice* mvkDev = MVKDevice::getMVKDevice(device);
 	VkResult rslt = mvkDev->createPipelines<MVKRayTracingPipeline, VkRayTracingPipelineCreateInfoKHR>(pipelineCache, count, pCreateInfos, pAllocator, pPipelines);
+	if (deferredOperation && rslt == VK_SUCCESS) { rslt = VK_OPERATION_NOT_DEFERRED_KHR; }
 	MVKTraceVulkanCallEnd();
 	return rslt;
 }

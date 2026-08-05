@@ -497,6 +497,7 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
                         }
                         geometryTriangles.vertexStride = triangleData.vertexStride;
                         geometryTriangles.vertexFormat = mvkMTLAccelerationStructureVertexFormatFromVkFormat(triangleData.vertexFormat);
+						geometryTriangles.intersectionFunctionTableOffset = i;
                         geometryTriangles.opaque = mvkIsAnyFlagEnabled(geom.flags, VK_GEOMETRY_OPAQUE_BIT_KHR);
                         geometryTriangles.allowDuplicateIntersectionFunctionInvocation = !mvkIsAnyFlagEnabled(geom.flags, VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR);
 
@@ -541,6 +542,7 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
 						geometryAABBs.boundingBoxStride = boundingBoxCount ||
 							aabbData.stride >= sizeof(VkAabbPositionsKHR)
 							? aabbData.stride : sizeof(VkAabbPositionsKHR);
+						geometryAABBs.intersectionFunctionTableOffset = i;
                         if (mvkBoundingBoxBuffer) {
                             geometryAABBs.boundingBoxBuffer = mvkBoundingBoxBuffer->getMTLBuffer();
                             geometryAABBs.boundingBoxBufferOffset = mvkBoundingBoxBuffer->getMTLBufferOffset() + boundingBoxOffset;

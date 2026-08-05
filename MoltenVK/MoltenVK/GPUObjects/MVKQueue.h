@@ -186,6 +186,8 @@ protected:
 typedef struct MVKSemaphoreSubmitInfo {
 private:
 	MVKSemaphore* _semaphore;
+	uint64_t _deferredOperation = 0;
+	bool _hasDeferredOperation = false;
 public:
 	uint64_t value;
 	VkPipelineStageFlags2 stageMask;
@@ -193,6 +195,8 @@ public:
 
 	void encodeWait(id<MTLCommandBuffer> mtlCmdBuff);
 	void encodeSignal(id<MTLCommandBuffer> mtlCmdBuff);
+	void deferBinaryWait();
+	void deferBinarySignal();
 	MVKSemaphoreSubmitInfo(const VkSemaphoreSubmitInfo& semaphoreSubmitInfo);
 	MVKSemaphoreSubmitInfo(const VkSemaphore semaphore, VkPipelineStageFlags stageMask);
 	MVKSemaphoreSubmitInfo(const MVKSemaphoreSubmitInfo& other);

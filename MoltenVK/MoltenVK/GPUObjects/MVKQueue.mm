@@ -635,11 +635,29 @@ void MVKQueue::destroyExecQueue() {
 #pragma mark MVKQueueSubmission
 
 void MVKSemaphoreSubmitInfo::encodeWait(id<MTLCommandBuffer> mtlCmdBuff) {
-	if (_semaphore) { _semaphore->encodeWait(mtlCmdBuff, value); }
+	if (!_semaphore) { return; }
+	if (_hasDeferredOperation) { _semaphore->encodeDeferredWait(mtlCmdBuff, _deferredOperation); }
+	else { _semaphore->encodeWait(mtlCmdBuff, value); }
 }
 
 void MVKSemaphoreSubmitInfo::encodeSignal(id<MTLCommandBuffer> mtlCmdBuff) {
-	if (_semaphore) { _semaphore->encodeSignal(mtlCmdBuff, value); }
+	if (!_semaphore) { return; }
+	if (_hasDeferredOperation) { _semaphore->encodeDeferredSignal(mtlCmdBuff, _deferredOperation); }
+	else { _semaphore->encodeSignal(mtlCmdBuff, value); }
+}
+
+void MVKSemaphoreSubmitInfo::deferBinaryWait() {
+	_hasDeferredOperation = _semaphore &&
+		_semaphore->getSemaphoreType() == VK_SEMAPHORE_TYPE_BINARY &&
+		_semaphore->isUsingCommandEncoding();
+	if (_hasDeferredOperation) { _deferredOperation = _semaphore->deferWait(); }
+}
+
+void MVKSemaphoreSubmitInfo::deferBinarySignal() {
+	_hasDeferredOperation = _semaphore &&
+		_semaphore->getSemaphoreType() == VK_SEMAPHORE_TYPE_BINARY &&
+		_semaphore->isUsingCommandEncoding();
+	if (_hasDeferredOperation) { _deferredOperation = _semaphore->deferSignal(); }
 }
 
 MVKSemaphoreSubmitInfo::MVKSemaphoreSubmitInfo(const VkSemaphoreSubmitInfo& semaphoreSubmitInfo) :
@@ -661,6 +679,8 @@ MVKSemaphoreSubmitInfo::MVKSemaphoreSubmitInfo(const VkSemaphore semaphore,
 
 MVKSemaphoreSubmitInfo::MVKSemaphoreSubmitInfo(const MVKSemaphoreSubmitInfo& other) :
 	_semaphore(other._semaphore),
+	_deferredOperation(other._deferredOperation),
+	_hasDeferredOperation(other._hasDeferredOperation),
 	value(other.value),
 	stageMask(other.stageMask),
 	deviceIndex(other.deviceIndex) {
@@ -672,6 +692,8 @@ MVKSemaphoreSubmitInfo& MVKSemaphoreSubmitInfo::operator=(const MVKSemaphoreSubm
 	if (other._semaphore) {other._semaphore->retain(); }
 	if (_semaphore) { _semaphore->release(); }
 	_semaphore = other._semaphore;
+	_deferredOperation = other._deferredOperation;
+	_hasDeferredOperation = other._hasDeferredOperation;
 
 	value = other.value;
 	stageMask = other.stageMask;
@@ -704,6 +726,9 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	for (uint32_t i = 0; i < waitSemaphoreInfoCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphoreSubmitInfos[i]);
 	}
+	if (getEnabledAccelerationStructureFeatures().accelerationStructure) {
+		for (auto& wait : _waitSemaphores) { wait.deferBinaryWait(); }
+	}
 }
 
 MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
@@ -719,6 +744,9 @@ MVKQueueSubmission::MVKQueueSubmission(MVKQueue* queue,
 	_waitSemaphores.reserve(waitSemaphoreCount);
 	for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
 		_waitSemaphores.emplace_back(pWaitSemaphores[i], pWaitDstStageMask ? pWaitDstStageMask[i] : 0);
+	}
+	if (getEnabledAccelerationStructureFeatures().accelerationStructure) {
+		for (auto& wait : _waitSemaphores) { wait.deferBinaryWait(); }
 	}
 }
 
@@ -891,6 +919,9 @@ MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue
 		for (uint32_t i = 0; i < ssCnt; i++) {
 			_signalSemaphores.emplace_back(pSubmit->pSignalSemaphoreInfos[i]);
 		}
+		if (getEnabledAccelerationStructureFeatures().accelerationStructure) {
+			for (auto& signal : _signalSemaphores) { signal.deferBinarySignal(); }
+		}
 	}
 }
 
@@ -940,6 +971,9 @@ MVKQueueCommandBufferSubmission::MVKQueueCommandBufferSubmission(MVKQueue* queue
 				_signalSemaphores[i].value = pTimelineSubmit->pSignalSemaphoreValues[i];
 			}
         }
+		if (getEnabledAccelerationStructureFeatures().accelerationStructure) {
+			for (auto& signal : _signalSemaphores) { signal.deferBinarySignal(); }
+		}
     }
 }
 

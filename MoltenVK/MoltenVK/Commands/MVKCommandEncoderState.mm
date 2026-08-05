@@ -541,15 +541,34 @@ static void executeBindOp(id<MTLCommandEncoder> encoder,
 			case MVKDescriptorBindOperationCode::UseAccelerationStructureWithLiveCheck: {
 				auto* generation = descriptorSnapshot->getGeneration(bindingIndex, i);
 				id<MTLAccelerationStructure> accelerationStructure = generation ? generation->getMTLAccelerationStructure() : nil;
+#if SPIRV_CROSS_MSL_ACCELERATION_STRUCTURE_DESCRIPTOR_AS_ADDRESS
 				id<MTLBuffer> instanceMetadata = generation ? generation->getInstanceMetadataMTLBuffer() : nil;
+#endif
 				if constexpr (Op == MVKDescriptorBindOperationCode::BindAccelerationStructure) {
+#if SPIRV_CROSS_MSL_ACCELERATION_STRUCTURE_DESCRIPTOR_AS_ADDRESS
+					id<MTLBuffer> referenceBuffer = generation ? generation->getReferenceMTLBuffer() : nil;
+					bindBuffer(encoder, referenceBuffer, 0, target + i, exists, bindings, binder);
+					if (!dev->hasResidencySet()) {
+						if (accelerationStructure)
+							mvkEncoder.getState().mtlShared()._useResource.addImmediate(accelerationStructure, encoder, binder.useResource, useResourceStage, false);
+						if (instanceMetadata)
+							mvkEncoder.getState().mtlShared()._useResource.addImmediate(instanceMetadata, encoder, binder.useResource, useResourceStage, false);
+					}
+#else
 					binder.setAccelerationStructure(encoder, accelerationStructure, target + i);
-					bindBuffer(encoder, instanceMetadata, 0, target2 + i, exists, bindings, binder);
+#endif
 				} else if constexpr (Op == MVKDescriptorBindOperationCode::UseAccelerationStructureWithLiveCheck) {
+#if SPIRV_CROSS_MSL_ACCELERATION_STRUCTURE_DESCRIPTOR_AS_ADDRESS
+					id<MTLBuffer> referenceBuffer = generation ? generation->getReferenceMTLBuffer() : nil;
+					if (referenceBuffer)
+						mvkEncoder.getState().mtlShared()._useResource.addImmediate(referenceBuffer, encoder, binder.useResource, useResourceStage, false);
+#endif
 					if (accelerationStructure)
-						mvkEncoder.getState().mtlShared()._useResource.addImmediate(accelerationStructure, encoder, binder.useResource, useResourceStage, target);
+						mvkEncoder.getState().mtlShared()._useResource.addImmediate(accelerationStructure, encoder, binder.useResource, useResourceStage, false);
+#if SPIRV_CROSS_MSL_ACCELERATION_STRUCTURE_DESCRIPTOR_AS_ADDRESS
 					if (instanceMetadata)
-						mvkEncoder.getState().mtlShared()._useResource.addImmediate(instanceMetadata, encoder, binder.useResource, useResourceStage, target);
+						mvkEncoder.getState().mtlShared()._useResource.addImmediate(instanceMetadata, encoder, binder.useResource, useResourceStage, false);
+#endif
 				}
 				break;
 			}

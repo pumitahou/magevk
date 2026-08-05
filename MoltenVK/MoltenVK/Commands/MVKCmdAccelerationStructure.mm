@@ -163,7 +163,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
         if ( !descriptor ) { continue; }
 		MTLAccelerationStructureSizes buildSizes = [cmdEncoder->getMTLDevice() accelerationStructureSizesWithDescriptor:descriptor];
 		uint64_t instanceMetadataSize = buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
-			? static_cast<uint64_t>(ranges[0].primitiveCount) * sizeof(uint32_t) * 2
+			? static_cast<uint64_t>(ranges[0].primitiveCount) * sizeof(uint32_t)
 			: 0;
 		MVKAccelerationStructureStorageGeneration* dstGeneration = nullptr;
 		VkResult generationResult = buildInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR

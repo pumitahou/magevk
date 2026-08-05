@@ -119,6 +119,14 @@ void MVKSemaphoreMTLEvent::encodeWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t)
 	if (mtlCmdBuff) { [mtlCmdBuff encodeWaitForEvent: _mtlEvent value: _mtlEventValue++]; }
 }
 
+uint64_t MVKSemaphoreMTLEvent::deferWait() {
+	return _mtlEventValue++;
+}
+
+void MVKSemaphoreMTLEvent::encodeDeferredWait(id<MTLCommandBuffer> mtlCmdBuff, uint64_t deferToken) {
+	[mtlCmdBuff encodeWaitForEvent: _mtlEvent value: deferToken];
+}
+
 void MVKSemaphoreMTLEvent::encodeSignal(id<MTLCommandBuffer> mtlCmdBuff, uint64_t) {
 	if (mtlCmdBuff) { [mtlCmdBuff encodeSignalEvent: _mtlEvent value: _mtlEventValue]; }
 }

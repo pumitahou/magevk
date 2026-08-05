@@ -651,7 +651,7 @@ kernel void cmdBuildAccelerationStructureConvertBuffers(
 		const device ulong2* accelerationStructureReferenceTable [[buffer(5)]],
 		device MVKSerializedAccelerationStructureInstanceRecord* serializedRecords [[buffer(6)]],
 		device ulong* serializedHandles [[buffer(7)]],
-		device uint2* instanceMetadata [[buffer(8)]],
+		device uint* instanceMetadata [[buffer(8)]],
 	    uint idx [[thread_position_in_grid]]) {
 	if (idx >= itemCount) { return; }
 	if (conversionType == MVKAccelerationStructureConvertTransform) {
@@ -671,7 +671,7 @@ kernel void cmdBuildAccelerationStructureConvertBuffers(
 		mvkWriteAccelerationStructureInstance(record.transform,
 			record.packedData1, record.packedData2, address,
 			accelerationStructureReferenceTable, dst);
-		instanceMetadata[idx] = uint2(record.packedData1 & 0xffffff, record.packedData2 & 0xffffff);
+		instanceMetadata[idx] = record.packedData2 & 0xffffff;
 		return;
 	}
 	const device char* srcAddress = srcBuff + idx * srcStride;
@@ -694,7 +694,7 @@ kernel void cmdBuildAccelerationStructureConvertBuffers(
 		                                      src.accelerationStructureReference,
 		                                      accelerationStructureReferenceTable,
 		                                      dst);
-	instanceMetadata[idx] = uint2(src.packedData1 & 0xffffff, src.packedData2 & 0xffffff);
+	instanceMetadata[idx] = src.packedData2 & 0xffffff;
 }
 
 struct MVKAccelerationStructureGatherInfo {
