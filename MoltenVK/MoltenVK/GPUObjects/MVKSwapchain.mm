@@ -131,6 +131,25 @@ VkResult MVKSwapchain::getSurfaceStatus() {
 			const char* oodEnv = getenv("MAGE_MVK_OUT_OF_DATE_ON_RESIZE");
 			oodOnResize = (oodEnv && !strcmp(oodEnv, "1")) ? 1 : 0;
 		}
+		// MageVK debug: log WHY the surface is non-optimal (swapchain recreate-loop hunting).
+		// Rate-limited; enabled by MAGE_MVK_DEBUG_PRESENT (already our debug flag).
+		if (getenv("MAGE_MVK_DEBUG_PRESENT")) {
+			static uint64_t suboptLogCount = 0;
+			if (++suboptLogCount <= 10 || suboptLogCount % 300 == 0) {
+				CAMetalLayer* layer = _surface->getCAMetalLayer();
+				VkExtent2D drawExt = _surface->getExtent();
+				VkExtent2D natExt = _surface->getNaturalExtent();
+				CGSize bnds = layer ? layer.bounds.size : CGSizeZero;
+				CGFloat cs = layer ? layer.contentsScale : 0;
+				MVKLogInfo("MAGE-DBG suboptimal #%llu: imageExtent=%ux%u drawable=%ux%u bounds=%.1fx%.1f contentsScale=%.2f natural=%ux%u deliberateScaled=%d",
+						   (unsigned long long)suboptLogCount,
+						   _imageExtent.width, _imageExtent.height,
+						   drawExt.width, drawExt.height,
+						   bnds.width, bnds.height, (double)cs,
+						   natExt.width, natExt.height,
+						   (int)_isDeliberatelyScaled);
+			}
+		}
 		return oodOnResize ? VK_ERROR_OUT_OF_DATE_KHR : VK_SUBOPTIMAL_KHR;
 	}
 	return VK_SUCCESS;
