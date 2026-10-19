@@ -32,6 +32,7 @@
 #include "MVKSync.h"
 #include "MVKCommandPool.h"
 #include "MVKFoundation.h"
+#include "MVKPlacementSparseCompat.h"
 #include "MVKStrings.h"
 #include <MoltenVKShaderConverter/SPIRVToMSLConverter.h>
 
@@ -1878,7 +1879,7 @@ void MVKPhysicalDevice::getSparseImageFormatProperties(VkFormat format,
 		!(_pixelFormats.isDepthFormat(mtlPixFmt) && _pixelFormats.isStencilFormat(mtlPixFmt));
 	if (supported) {
 		if (@available(macOS 26.4, *)) {
-			if (_mtlDevice.supportsPlacementSparse) {
+			if (mvkSupportsPlacementSparse(_mtlDevice)) {
 				MTLTextureType mtlTexType = mvkMTLTextureTypeFromVkImageType(type, 1, samples > VK_SAMPLE_COUNT_1_BIT);
 				MTLSize tileSize = [_mtlDevice sparseTileSizeWithTextureType:mtlTexType
 																pixelFormat:mtlPixFmt
@@ -2621,7 +2622,7 @@ void MVKPhysicalDevice::initMageSparseFeatures() {
 	bool sparseImagesAvailable = false;
 #if MVK_XCODE_26 && MVK_MACOS
 	if (@available(macOS 26.4, *)) {
-		sparseImagesAvailable = _metalFeatures.placementHeaps && _mtlDevice.supportsPlacementSparse;
+		sparseImagesAvailable = _metalFeatures.placementHeaps && mvkSupportsPlacementSparse(_mtlDevice);
 	}
 #endif
 	if (sparseImagesAvailable && mvkGetEnvVarNumber("MAGE_MVK_NO_SPARSE_IMAGE") == 0.0) {
@@ -6248,7 +6249,7 @@ void MVKDevice::enableFeatures(const VkDeviceCreateInfo* pCreateInfo) {
 		mvkGetEnvVarNumber("MAGE_MVK_ALLOW_UNSUPPORTED_FEATURES") != 0.0 &&
 		mvkGetEnvVarNumber("MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS") != 0.0) {
 		if (@available(macOS 26.4, *)) {
-			_privateSparseBufferEnabled = _physicalDevice->getMTLDevice().supportsPlacementSparse;
+			_privateSparseBufferEnabled = mvkSupportsPlacementSparse(_physicalDevice->getMTLDevice());
 		}
 	}
 #endif

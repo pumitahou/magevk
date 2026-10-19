@@ -325,9 +325,11 @@ void MVKCmdTraceRays::encode(MVKCommandEncoder* cmdEncoder) {
 	}
 	[mtlEncoder setBytes:&dispatch length:sizeof(dispatch) atIndex:pipeline->getRayTracingDispatchBufferIndex()];
 	if (_mtlIndirectBuffer) {
+		// The indirect buffer contains Vulkan ray counts. Keep a unit group
+		// here so Metal's group counts retain the exact Vulkan launch size.
 		[mtlEncoder dispatchThreadgroupsWithIndirectBuffer:_mtlIndirectBuffer
 									 indirectBufferOffset:_mtlIndirectBufferOffset
-									threadsPerThreadgroup:pipeline->getThreadgroupSize()];
+									threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
 	} else {
 		[mtlEncoder dispatchThreads:_threads threadsPerThreadgroup:pipeline->getThreadgroupSize()];
 	}

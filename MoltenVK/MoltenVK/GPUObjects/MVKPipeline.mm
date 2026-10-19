@@ -29,6 +29,7 @@
 #include <sstream>
 #include <fstream>
 #include <vector>
+#include <cstdlib>
 
 #ifndef MVK_USE_CEREAL
 #define MVK_USE_CEREAL (1)
@@ -3273,7 +3274,19 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 	descriptor.computeFunction = dispatcher;
 	descriptor.linkedFunctions = linkedFunctions;
 	descriptor.maxCallStackDepth = kMaxCallStackDepth;
-	descriptor.maxTotalThreadsPerThreadgroup = 1;
+	// Vulkan RT launch dimensions count rays, not Metal threadgroups. The
+	// dispatcher has no threadgroup-shared state, so direct launches can use
+	// multiple lanes without changing ray IDs or shader binding semantics.
+	NSUInteger rayTracingGroupSize = 32;
+	if (const char* overrideSize = std::getenv("RADIANCE_MAGEVK_RT_GROUP_SIZE")) {
+		char* end = nullptr;
+		unsigned long value = std::strtoul(overrideSize, &end, 10);
+		if (end != overrideSize && *end == '\0' &&
+			(value == 1 || value == 8 || value == 16 || value == 32 || value == 64 || value == 128)) {
+			rayTracingGroupSize = value;
+		}
+	}
+	descriptor.maxTotalThreadsPerThreadgroup = rayTracingGroupSize;
 	setMetalObjectLabel(descriptor, _layout->getDebugName());
 
 	MVKComputePipelineCompiler* compiler = new MVKComputePipelineCompiler(this);
@@ -3287,6 +3300,11 @@ MVKRayTracingPipeline::MVKRayTracingPipeline(MVKDevice* device,
 		finishFeedback();
 		return;
 	}
+	_mtlThreadgroupSize = MTLSizeMake(std::min(rayTracingGroupSize,
+		_mtlPipelineState.maxTotalThreadsPerThreadgroup), 1, 1);
+	fprintf(stderr, "[RADIANCE-E13-MAGEVK] RT direct group=%lu executionWidth=%lu maximum=%lu indirectGroup=1\n",
+		(unsigned long)_mtlThreadgroupSize.width, (unsigned long)_mtlPipelineState.threadExecutionWidth,
+		(unsigned long)_mtlPipelineState.maxTotalThreadsPerThreadgroup);
 
 	auto makeTable = [&](NSUInteger functionCount) {
 		MTLVisibleFunctionTableDescriptor* tableDescriptor = [MTLVisibleFunctionTableDescriptor new];

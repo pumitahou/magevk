@@ -411,9 +411,23 @@ id<MTLCommandBuffer> MVKQueue::getMTLCommandBuffer(MVKCommandUse cmdUse, bool re
 	uint64_t startTime = getPerformanceTimestamp();
 
 	MTLCommandBufferDescriptor* mtlCmdBuffDesc = [MTLCommandBufferDescriptor new];	// temp retain
-	mtlCmdBuffDesc.retainedReferences = retainRefs;
-	if (getMVKConfig().debugMode) {
+	static const bool retainForRadiance = [] {
+		const char* value = getenv("RADIANCE_MAGEVK_RETAIN_RESOURCES");
+		return value && strcmp(value, "1") == 0;
+	}();
+	// Keep resources that Metal binds, including temporary RT tables and
+	// buffers, alive until this command buffer completes. This is opt-in
+	// while investigating the Invalid Resource error observed in Minecraft.
+	mtlCmdBuffDesc.retainedReferences = retainRefs || retainForRadiance;
+	if (getMVKConfig().debugMode || retainForRadiance) {
 		mtlCmdBuffDesc.errorOptions |= MTLCommandBufferErrorOptionEncoderExecutionStatus;
+	}
+	if (retainForRadiance) {
+		static std::once_flag reportOnce;
+		std::call_once(reportOnce, [&] {
+			fprintf(stderr, "[RADIANCE-E13-MAGEVK] retainedReferences=1 encoderErrorStatus=1 residencySet=%u\n",
+				getDevice()->hasResidencySet() ? 1u : 0u);
+		});
 	}
 	mtlCmdBuff = [_mtlQueue commandBufferWithDescriptor: mtlCmdBuffDesc];
 	[mtlCmdBuffDesc release];														// temp release
@@ -482,6 +496,9 @@ void MVKQueue::handleMTLCommandBufferError(id<MTLCommandBuffer> mtlCmdBuff) {
 			break;
 		case MTLCommandBufferErrorTimeout:
 			vkErr = VK_TIMEOUT;
+			break;
+		case MTLCommandBufferErrorInvalidResource:
+			vkErr = VK_ERROR_DEVICE_LOST;
 			break;
 		case MTLCommandBufferErrorStackOverflow:
 		case MTLCommandBufferErrorPageFault:

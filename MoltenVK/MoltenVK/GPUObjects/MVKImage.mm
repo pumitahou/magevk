@@ -23,6 +23,7 @@
 #include "MVKCommandBuffer.h"
 #include "MVKCmdDebug.h"
 #include "MVKFoundation.h"
+#include "MVKPlacementSparseCompat.h"
 #include "MVKOSExtensions.h"
 #include "MVKCodec.h"
 
@@ -1472,7 +1473,7 @@ void MVKImage::initSparseImage(const VkImageCreateInfo* pCreateInfo,
 	}
 
 	if (@available(macOS 26.4, *)) {
-		if (!getMTLDevice().supportsPlacementSparse) {
+		if (!mvkSupportsPlacementSparse(getMTLDevice())) {
 			setConfigurationResult(reportError(VK_ERROR_FEATURE_NOT_PRESENT, "vkCreateImage(): Placement-sparse Metal textures are not available."));
 			return;
 		}
