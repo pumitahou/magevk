@@ -25,6 +25,8 @@
 #include "MVKPipeline.h"
 #include "MVKQueryPool.h"
 #include "mvk_datatypes.hpp"
+#include <atomic>
+#include <cstdio>
 
 using namespace std;
 
@@ -915,6 +917,29 @@ static bool isGraphicsStage(MVKShaderStage stage) {
 
 static constexpr MTLResourceUsage MTLResourceUsageReadWrite = MTLResourceUsageRead | MTLResourceUsageWrite;
 
+static void retainTrackedResource(id<MTLResource> resource) {
+	[resource retain];
+	static atomic_flag didLog = ATOMIC_FLAG_INIT;
+	if (!didLog.test_and_set(memory_order_relaxed)) {
+		std::fprintf(stderr, "[RADIANCE-E17] use_resource_retention=enabled\n");
+	}
+}
+
+MVKUseResourceHelper::~MVKUseResourceHelper() {
+	reset();
+}
+
+void MVKUseResourceHelper::reset() {
+	for (auto& entry : entries) {
+		entry.read.clear();
+		entry.readWrite.clear();
+	}
+	for (const auto& resource : used) {
+		[resource.first release];
+	}
+	used.clear();
+}
+
 static bool isCompatible(MVKUseResourceHelper::ResourceInfo current, MVKUseResourceHelper::ResourceInfo add) {
 	if (!current.write && add.write)
 		return false;
@@ -922,8 +947,10 @@ static bool isCompatible(MVKUseResourceHelper::ResourceInfo current, MVKUseResou
 }
 
 void MVKUseResourceHelper::add(id<MTLResource> resource, MVKResourceUsageStages stage, bool write) {
+	if (!resource) { return; }
 	ResourceInfo info { stage, write, true };
 	auto res = used.emplace(resource, info);
+	if (res.second) { retainTrackedResource(resource); }
 	if (res.second || !isCompatible(res.first->second, info)) {
 		ResourceInfo& stored = res.first->second;
 		if (!res.second) {
@@ -936,8 +963,10 @@ void MVKUseResourceHelper::add(id<MTLResource> resource, MVKResourceUsageStages 
 }
 
 void MVKUseResourceHelper::addImmediate(id<MTLResource> resource, id<MTLCommandEncoder> enc, MVKResourceBinder::UseResource func, MVKResourceUsageStages stage, bool write) {
+	if (!resource) { return; }
 	ResourceInfo info { stage, write, false };
 	auto res = used.emplace(resource, info);
+	if (res.second) { retainTrackedResource(resource); }
 	if (res.second || !isCompatible(res.first->second, info)) {
 		ResourceInfo& stored = res.first->second;
 		if (!res.second) {

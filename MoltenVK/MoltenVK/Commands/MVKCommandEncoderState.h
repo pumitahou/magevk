@@ -153,6 +153,12 @@ struct MVKUseResourceHelper {
 	};
 	MVKOnePerEnumEntry<Entry, MVKResourceUsageStages> entries;
 	std::unordered_map<id<MTLResource>, ResourceInfo> used;
+	MVKUseResourceHelper() = default;
+	MVKUseResourceHelper(const MVKUseResourceHelper&) = delete;
+	MVKUseResourceHelper& operator=(const MVKUseResourceHelper&) = delete;
+	~MVKUseResourceHelper();
+	/** Release retained resources and clear any pending Metal resource lists. */
+	void reset();
 	/** Add a resource to the list of resources to use. */
 	void add(id<MTLResource> resource, MVKResourceUsageStages stage, bool write);
 	/**
@@ -244,7 +250,7 @@ struct MVKMetalSharedCommandEncoderState {
 
 	void reset() {
 		_gpuAddressableResourceStages = MVKResourceUsageStages::None;
-		_useResource.used.clear();
+		_useResource.reset();
 	}
 };
 
