@@ -531,7 +531,7 @@ public:
 protected:
 	friend MVKSwapchain;
 
-	id<CAMetalDrawable> getCAMetalDrawable();
+	id<CAMetalDrawable> getCAMetalDrawable(bool retainDrawable = false);
 	void addPresentedHandler(id<CAMetalDrawable> mtlDrawable, MVKImagePresentInfo presentInfo, MVKSwapchainSignaler signaler);
 	void releaseMetalDrawable();
 	MVKSwapchainImageAvailability getAvailability();
@@ -539,6 +539,7 @@ protected:
 	VkResult acquireAndSignalWhenAvailable(MVKSemaphore* semaphore, MVKFence* fence);
 	MVKSwapchainSignaler getPresentationSignaler();
 
+	std::mutex _drawableLock;
 	id<CAMetalDrawable> _mtlDrawable = nil;
 	id<MTLTexture> _mtlTextureHeadless = nil;
 	MVKSwapchainImageAvailability _availability;

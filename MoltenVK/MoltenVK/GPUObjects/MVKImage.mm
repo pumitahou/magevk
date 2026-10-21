@@ -1763,7 +1763,8 @@ VkResult MVKPresentableSwapchainImage::acquireAndSignalWhenAvailable(MVKSemaphor
 // Calling nextDrawable may result in a nil drawable, or a drawable with no pixel format.
 // Attempt several times to retrieve a good drawable, and set an error to trigger the
 // swapchain to be re-established if one cannot be retrieved.
-id<CAMetalDrawable> MVKPresentableSwapchainImage::getCAMetalDrawable() {
+id<CAMetalDrawable> MVKPresentableSwapchainImage::getCAMetalDrawable(bool retainDrawable) {
+	lock_guard<mutex> drawableLock(_drawableLock);
 
 	if (_mtlTextureHeadless) { return nil; }	// If headless, there is no drawable.
 
@@ -1776,7 +1777,10 @@ id<CAMetalDrawable> MVKPresentableSwapchainImage::getCAMetalDrawable() {
 				_mtlDrawable = [_swapchain->getCAMetalLayer().nextDrawable retain];	// retained
 				addPerformanceInterval(getPerformanceStats().queue.retrieveCAMetalDrawable, startTime);
 				hasInvalidFormat = _mtlDrawable && !_mtlDrawable.texture.pixelFormat;
-				if (hasInvalidFormat) { releaseMetalDrawable(); }
+				if (hasInvalidFormat) {
+					[_mtlDrawable release];
+					_mtlDrawable = nil;
+				}
 			}
 			if (hasInvalidFormat) {
 				setConfigurationResult(reportError(VK_ERROR_OUT_OF_DATE_KHR, "CAMetalDrawable with valid format could not be acquired after %d attempts.", attemptCnt));
@@ -1785,7 +1789,8 @@ id<CAMetalDrawable> MVKPresentableSwapchainImage::getCAMetalDrawable() {
 			}
 		}
 	}
-	return _mtlDrawable;
+	// Retain while still holding the lock: acquisition may release the image on another thread.
+	return retainDrawable ? [_mtlDrawable retain] : _mtlDrawable;
 }
 
 // If not headless, retrieve the MTLTexture directly from the CAMetalDrawable.
@@ -1799,54 +1804,35 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 															  MVKImagePresentInfo presentInfo) {
 	_swapchain->renderWatermark(getMTLTexture(0), mtlCmdBuff);
 
-	// According to Apple, it is more performant to call MTLDrawable present from within a
-	// MTLCommandBuffer scheduled-handler than it is to call MTLCommandBuffer presentDrawable:.
-	// But get current drawable now, intead of in handler, because a new drawable might be acquired by then.
-	// Attach present handler before presenting to avoid race condition.
-	// MageVK: retain the drawable before getPresentationSignaler() can mark this
-	// image available — a racing acquire can releaseMetalDrawable() and dealloc
-	// it before the retain near the completion handler below. (UAF, also present
-	// upstream.)
-	id<CAMetalDrawable> mtlDrwbl = [getCAMetalDrawable() retain];
+	// Keep a drawable lease across acquisition and let Metal own the presentation
+	// request, rather than a scheduled callback dereferencing a recycled drawable.
+	id<CAMetalDrawable> mtlDrwbl = getCAMetalDrawable(true);
 	MVKSwapchainSignaler signaler = getPresentationSignaler();
-	[mtlCmdBuff addScheduledHandler: ^(id<MTLCommandBuffer> mcb) {
+	addPresentedHandler(mtlDrwbl, presentInfo, signaler);
 
-		addPresentedHandler(mtlDrwbl, presentInfo, signaler);
+	static const bool presentationMarker = [] {
+		fprintf(stderr, "[RADIANCE-E20] presentation=command-buffer drawableLease=locked\n");
+		return true;
+	}();
+	(void)presentationMarker;
 
-		// Try to do any present mode transitions as late as possible in an attempt
-		// to avoid visual disruptions on any presents already on the queue.
-		// Only write the property on an actual transition: writing displaySyncEnabled
-		// every present, mid-scanout, produces stale full-width band flicker.
-		static bool dbgPresent = getenv("MAGE_MVK_DEBUG_PRESENT") != nullptr;
-		static uint64_t dbgN = 0;
-		if (dbgPresent) {
-			uint64_t n = ++dbgN;
-			if (n <= 10 || n % 300 == 0) {
-				fprintf(stderr, "MAGE-DBG present #%llu: mode=%d layerSync=%d\n",
-						(unsigned long long)n, (int)presentInfo.presentMode,
-						(int)mtlDrwbl.layer.displaySyncEnabledMVK);
-			}
+	if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
+		static const bool forceFifo = [] {
+			const char* value = getenv("MAGE_MVK_FORCE_FIFO");
+			return value && !strcmp(value, "1");
+		}();
+		BOOL syncEnabled = forceFifo || presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR;
+		if (mtlDrwbl.layer.displaySyncEnabledMVK != syncEnabled) {
+			mtlDrwbl.layer.displaySyncEnabledMVK = syncEnabled;
 		}
-		if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
-			// MageVK: honor the same MAGE_MVK_FORCE_FIFO clamp for
-			// per-present mode overrides (VK_EXT_swapchain_maintenance1).
-			static int forceFifoP = -1;
-			if (forceFifoP < 0) {
-				const char* ffEnv = getenv("MAGE_MVK_FORCE_FIFO");
-				forceFifoP = (ffEnv && !strcmp(ffEnv, "1")) ? 1 : 0;
-			}
-			BOOL syncEnabled = forceFifoP ? YES : (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
-			if (mtlDrwbl.layer.displaySyncEnabledMVK != syncEnabled) {
-				if (dbgPresent) { fprintf(stderr, "MAGE-DBG displaySync transition -> %d at present #%llu\n", (int)syncEnabled, (unsigned long long)dbgN); }
-				mtlDrwbl.layer.displaySyncEnabledMVK = syncEnabled;
-			}
-		}
+	}
+	if (mtlDrwbl) {
 		if (presentInfo.desiredPresentTime) {
-			[mtlDrwbl presentAtTime: (double)presentInfo.desiredPresentTime * 1.0e-9];
+			[mtlCmdBuff presentDrawable: mtlDrwbl atTime: (double)presentInfo.desiredPresentTime * 1.0e-9];
 		} else {
-			[mtlDrwbl present];
+			[mtlCmdBuff presentDrawable: mtlDrwbl];
 		}
-	}];
+	}
 
 	// Ensure this image, the drawable, and the present fence are not destroyed while
 	// awaiting MTLCommandBuffer completion. The drawable was already retained at
@@ -1860,9 +1846,12 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 	[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mcb) {
 		signal(fence);
 		if (fence) { fence->release(); }
+		{
+			lock_guard<mutex> lock(_detachmentLock);
+			if (_swapchain) { _swapchain->notifyPresentComplete(presentInfo); }
+		}
 		[mtlDrwbl release];
-		release();
-		if (_swapchain) { _swapchain->notifyPresentComplete(presentInfo); }
+		release(); // Last access to this image: release may destroy it.
 	}];
 
 	signal(signaler.semaphore, signaler.semaphoreSignalToken, mtlCmdBuff);
@@ -1944,8 +1933,14 @@ void MVKPresentableSwapchainImage::endPresentation(const MVKImagePresentInfo& pr
 
 // Releases the CAMetalDrawable underlying this image.
 void MVKPresentableSwapchainImage::releaseMetalDrawable() {
-    [_mtlDrawable release];
-	_mtlDrawable = nil;
+	id<CAMetalDrawable> drawable;
+	{
+		lock_guard<mutex> lock(_drawableLock);
+		drawable = _mtlDrawable;
+		_mtlDrawable = nil;
+	}
+	// Releasing may invoke presentation callbacks; never do it under _drawableLock.
+	[drawable release];
 }
 
 // Signal, untrack, and release any signalers that are tracking.
